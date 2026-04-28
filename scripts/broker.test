@@ -1,0 +1,1075 @@
+#!/bin/bash
+
+# wolfMQTT Broker Test Suite
+# Uses only wolfMQTT tools (mqttclient, mqtt-pub, mqtt-sub) - no external dependencies
+
+broker_bin="src/mqtt_broker"
+client_bin="examples/mqttclient/mqttclient"
+pub_bin="examples/pub-sub/mqtt-pub"
+sub_bin="examples/pub-sub/mqtt-sub"
+no_pid=-1
+broker_pid=$no_pid
+
+do_cleanup() {
+    if [ $broker_pid != $no_pid ]; then
+        kill $broker_pid 2>/dev/null
+        wait $broker_pid 2>/dev/null || true
+        broker_pid=$no_pid
+    fi
+    for pid in "${TEST_PIDS[@]:-}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true
+    if [ -n "${TMP_DIR:-}" ] && [ -d "${TMP_DIR}" ]; then
+        if [ "${KEEP_LOGS:-0}" = "1" ]; then
+            echo "Logs preserved in ${TMP_DIR}"
+        else
+            rm -rf "${TMP_DIR}"
+        fi
+    fi
+    if [ $1 -ne 0 ]; then
+        exit 1
+    fi
+}
+
+# Check for required binaries
+[ ! -x ./$broker_bin ] && echo "$broker_bin not found" && exit 1
+[ ! -x ./$client_bin ] && echo "$client_bin not found" && exit 1
+[ ! -x ./$pub_bin ] && echo "$pub_bin not found" && exit 1
+[ ! -x ./$sub_bin ] && echo "$sub_bin not found" && exit 1
+
+generate_port() {
+    # Generate a port in [15000, 32000) to stay below the Linux ephemeral
+    # port range (default 32768-60999) and macOS ephemeral range (49152-65535).
+    # Use -tu2 to get unsigned decimal output and avoid the octal-vs-decimal
+    # ambiguity that the legacy od output format creates in bash arithmetic.
+    local n
+    if [[ "$OSTYPE" == "linux"* ]]; then
+        n=$(od -An -tu2 -N2 /dev/urandom | tr -d ' \n')
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        n=$(od -An -tu2 -N2 /dev/random | tr -d ' \n')
+    else
+        port=11883
+        return
+    fi
+    port=$((n % (32000 - 15000) + 15000))
+}
+
+check_broker() {
+    local check_port=${1:-$port}
+    if ! timeout 5 sh -c 'until nc -z $0 $1 2>/dev/null; do sleep 0.1; done' \
+            localhost $check_port; then
+        echo "WARNING: broker did not become ready on port $check_port" >&2
+        return 1
+    fi
+}
+
+# Wait for a file to appear (used for subscriber ready synchronization)
+# Usage: wait_for_file <file> [timeout_sec]
+wait_for_file() {
+    local file="$1"
+    local timeout_sec="${2:-5}"
+    local waited=0
+    local max_iters=$((timeout_sec * 10))
+    while [ ! -f "$file" ] && [ $waited -lt $max_iters ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    [ -f "$file" ]
+}
+
+# Start broker helper: kills existing broker, generates port, starts new one
+# When -t is among the args, also sets the TLS port (-s) to $port so that
+# single-port TLS tests can connect on $port regardless of dual-port support.
+start_broker() {
+    if [ $broker_pid != $no_pid ]; then
+        kill $broker_pid 2>/dev/null
+        wait $broker_pid 2>/dev/null || true
+        broker_pid=$no_pid
+    fi
+    generate_port
+    local tls_args=""
+    local has_tls=0
+    local has_s_port=0
+    for arg in "$@"; do
+        if [ "$arg" = "-t" ]; then
+            has_tls=1
+        elif [ "$arg" = "-s" ]; then
+            has_s_port=1
+        fi
+    done
+    if [ "$has_tls" -eq 1 ] && [ "$has_s_port" -eq 0 ]; then
+        tls_args="-s $port"
+    fi
+    broker_log="${TMP_DIR}/broker_p${port}.log"
+    ./$broker_bin "$@" -p $port $tls_args >"$broker_log" 2>&1 &
+    broker_pid=$!
+    check_broker
+}
+
+# Start broker with dual ports (plain + TLS).
+# Sets $port (plain) and $port_tls (TLS).
+start_broker_dual() {
+    if [ $broker_pid != $no_pid ]; then
+        kill $broker_pid 2>/dev/null
+        wait $broker_pid 2>/dev/null || true
+        broker_pid=$no_pid
+    fi
+    generate_port
+    local plain_port=$port
+    generate_port
+    port_tls=$port
+    port=$plain_port
+    broker_log="${TMP_DIR}/broker_dual_p${port}_t${port_tls}.log"
+    ./$broker_bin "$@" -p $port -s $port_tls >"$broker_log" 2>&1 &
+    broker_pid=$!
+    check_broker $port
+    check_broker $port_tls
+}
+
+TEST_PIDS=()
+TMP_DIR="$(mktemp -d)"
+FAIL=0
+
+echo "=== wolfMQTT Broker Test Suite ==="
+
+# Feature detection via broker help output
+broker_features=$(./$broker_bin -h 2>&1 | grep "Features:")
+has_auth=no
+has_retained=no
+has_will=no
+has_wildcards=no
+has_insecure=no
+has_tls=no
+echo "$broker_features" | grep -q "auth" && has_auth=yes
+echo "$broker_features" | grep -q "retained" && has_retained=yes
+echo "$broker_features" | grep -q " will" && has_will=yes
+echo "$broker_features" | grep -q "wildcards" && has_wildcards=yes
+echo "$broker_features" | grep -q "insecure" && has_insecure=yes
+echo "$broker_features" | grep -q "tls" && has_tls=yes
+
+# Determine if plain (non-TLS) tests can run
+skip_plain=no
+if [ "$has_insecure" = "no" ] && [ "$has_tls" = "yes" ]; then
+    skip_plain=yes
+fi
+
+if [ "$skip_plain" = "no" ]; then
+
+# Start plain broker for tests 1-6
+start_broker
+
+# --- Test 1: Basic pub/sub ---
+echo ""
+echo "--- Test 1: Basic pub/sub ---"
+./$client_bin -T -h 127.0.0.1 -p $port -n "test/basic" -C 5000 \
+    >"${TMP_DIR}/t1.log" 2>&1
+if [ $? -eq 0 ]; then
+    echo "PASS: Basic pub/sub"
+else
+    echo "FAIL: Basic pub/sub"
+    FAIL=1
+fi
+
+# --- Test 2: QoS 1 pub/sub ---
+echo ""
+echo "--- Test 2: QoS 1 pub/sub ---"
+./$client_bin -T -h 127.0.0.1 -p $port -n "test/qos1" -q 1 -C 5000 \
+    >"${TMP_DIR}/t2.log" 2>&1
+if [ $? -eq 0 ]; then
+    echo "PASS: QoS 1 pub/sub"
+else
+    echo "FAIL: QoS 1 pub/sub"
+    FAIL=1
+fi
+
+# --- Test 3: QoS 2 pub/sub ---
+echo ""
+echo "--- Test 3: QoS 2 pub/sub ---"
+./$client_bin -T -h 127.0.0.1 -p $port -n "test/qos2" -q 2 -C 5000 \
+    >"${TMP_DIR}/t3.log" 2>&1
+if [ $? -eq 0 ]; then
+    echo "PASS: QoS 2 pub/sub"
+else
+    echo "FAIL: QoS 2 pub/sub"
+    FAIL=1
+fi
+
+# --- Test 4: Retained message ---
+echo ""
+echo "--- Test 4: Retained message ---"
+if [ "$has_retained" = "no" ]; then
+    echo "SKIP: Retained message (not built with retained support)"
+else
+# Publish a retained message (-T disables stdin capture for background use)
+./$pub_bin -T -h 127.0.0.1 -p $port -n "test/retain" -m "retained_msg" -r \
+    >"${TMP_DIR}/t4_pub.log" 2>&1
+# New subscriber should receive the retained message
+rm -f "${TMP_DIR}/t4_sub.ready"
+timeout 5 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/retain" \
+    -R "${TMP_DIR}/t4_sub.ready" >"${TMP_DIR}/t4_sub.log" 2>&1 &
+T4_PID=$!
+TEST_PIDS+=($T4_PID)
+wait_for_file "${TMP_DIR}/t4_sub.ready" 5
+sleep 0.2  # brief wait for retained message delivery
+kill $T4_PID 2>/dev/null
+wait $T4_PID 2>/dev/null || true
+TEST_PIDS=()
+if grep -q "retained_msg" "${TMP_DIR}/t4_sub.log" 2>/dev/null; then
+    echo "PASS: Retained message"
+else
+    echo "FAIL: Retained message"
+    FAIL=1
+fi
+fi # has_retained
+
+# --- Test 5: Last Will and Testament ---
+echo ""
+echo "--- Test 5: Last Will and Testament ---"
+if [ "$has_will" = "no" ]; then
+    echo "SKIP: LWT (not built with will support)"
+else
+# LWT topic is hardcoded as "wolfMQTT/example/lwttopic", payload is the client ID
+# Use mqtt-sub as the LWT watcher
+# Note: v5 clients set Will Delay Interval=5s, so watcher must stay alive long enough
+rm -f "${TMP_DIR}/t5_watcher.ready" "${TMP_DIR}/t5_client.ready"
+timeout 20 ./$sub_bin -T -h 127.0.0.1 -p $port -n "wolfMQTT/example/lwttopic" \
+    -R "${TMP_DIR}/t5_watcher.ready" >"${TMP_DIR}/t5_watcher.log" 2>&1 &
+T5_WATCHER_PID=$!
+TEST_PIDS+=($T5_WATCHER_PID)
+wait_for_file "${TMP_DIR}/t5_watcher.ready" 5
+# Use mqtt-sub with LWT enabled as the client to be killed
+# mqtt-sub stays connected waiting for messages (unlike mqttclient which auto-exits)
+./$sub_bin -T -h 127.0.0.1 -p $port -n "test/lwt_trigger" -i "lwt_client" -l \
+    -R "${TMP_DIR}/t5_client.ready" >"${TMP_DIR}/t5_client.log" 2>&1 &
+T5_CLIENT_PID=$!
+TEST_PIDS+=($T5_CLIENT_PID)
+wait_for_file "${TMP_DIR}/t5_client.ready" 5
+kill -9 $T5_CLIENT_PID 2>/dev/null
+wait $T5_CLIENT_PID 2>/dev/null || true
+sleep 8  # v5 Will Delay Interval is 5s
+kill $T5_WATCHER_PID 2>/dev/null
+wait $T5_WATCHER_PID 2>/dev/null || true
+TEST_PIDS=()
+if grep -q "lwt_client" "${TMP_DIR}/t5_watcher.log" 2>/dev/null; then
+    echo "PASS: LWT delivered on abnormal disconnect"
+else
+    echo "FAIL: LWT not delivered"
+    FAIL=1
+fi
+fi # has_will
+
+# --- Test 6: Keep-alive timeout enforcement ---
+echo ""
+echo "--- Test 6: Keep-alive enforcement ---"
+if [ "$has_will" = "no" ]; then
+    echo "SKIP: Keep-alive enforcement (not built with will support)"
+else
+# Subscriber watches the LWT topic
+# Note: v5 clients set Will Delay Interval=5s on top of keepalive timeout
+rm -f "${TMP_DIR}/t6_watcher.ready" "${TMP_DIR}/t6_client.ready"
+timeout 25 ./$sub_bin -T -h 127.0.0.1 -p $port -n "wolfMQTT/example/lwttopic" \
+    -R "${TMP_DIR}/t6_watcher.ready" >"${TMP_DIR}/t6_sub.log" 2>&1 &
+T6_WATCHER_PID=$!
+TEST_PIDS+=($T6_WATCHER_PID)
+wait_for_file "${TMP_DIR}/t6_watcher.ready" 5
+# Client connects with short keepalive (2s) and LWT enabled, then gets frozen
+./$sub_bin -T -h 127.0.0.1 -p $port -n "test/ka_trigger" -i "ka_client" -l -k 2 \
+    -R "${TMP_DIR}/t6_client.ready" >"${TMP_DIR}/t6_client.log" 2>&1 &
+T6_CLIENT_PID=$!
+TEST_PIDS+=($T6_CLIENT_PID)
+wait_for_file "${TMP_DIR}/t6_client.ready" 5
+# Freeze the client so it stops sending PINGREQs
+kill -STOP $T6_CLIENT_PID 2>/dev/null
+# Wait for broker to detect keepalive timeout (1.5x * 2s = 3s)
+# plus v5 will delay interval (5s) + margin
+sleep 10
+kill -9 $T6_CLIENT_PID 2>/dev/null
+wait $T6_CLIENT_PID 2>/dev/null || true
+kill $T6_WATCHER_PID 2>/dev/null
+wait $T6_WATCHER_PID 2>/dev/null || true
+TEST_PIDS=()
+if grep -q "ka_client" "${TMP_DIR}/t6_sub.log" 2>/dev/null; then
+    echo "PASS: Keep-alive enforcement (LWT delivered on timeout)"
+else
+    echo "FAIL: Keep-alive enforcement"
+    FAIL=1
+fi
+fi # has_will
+
+fi # skip_plain (tests 1-6)
+
+# --- Test 7: Username/password auth ---
+echo ""
+echo "--- Test 7: Username/password auth ---"
+if [ "$skip_plain" = "yes" ]; then
+    echo "SKIP: Auth (plain listener disabled, TLS-only mode)"
+elif [ "$has_auth" = "no" ]; then
+    echo "SKIP: Auth (not built with auth support)"
+else
+start_broker -u testuser -P testpass
+
+# Without credentials - should be rejected (non-zero exit code)
+./$client_bin -T -h 127.0.0.1 -p $port -n "test/auth" -C 5000 \
+    >"${TMP_DIR}/t6_noauth.log" 2>&1
+T6_NOAUTH_RC=$?
+
+# With credentials - should succeed (exit code 0)
+./$client_bin -T -h 127.0.0.1 -p $port -n "test/auth" -u testuser -w testpass -C 5000 \
+    >"${TMP_DIR}/t6_auth.log" 2>&1
+T6_AUTH_RC=$?
+
+if [ $T6_NOAUTH_RC -ne 0 ] && [ $T6_AUTH_RC -eq 0 ]; then
+    echo "PASS: Auth rejection and acceptance"
+else
+    echo "FAIL: Auth test (noauth_rc=$T6_NOAUTH_RC, auth_rc=$T6_AUTH_RC)"
+    FAIL=1
+fi
+fi # has_auth
+
+# --- TLS Tests ---
+if [ "$has_tls" = "yes" ]; then
+    # --- Test 8: TLS pub/sub ---
+    echo ""
+    echo "--- Test 8: TLS pub/sub ---"
+    start_broker -t \
+        -c scripts/broker_test/server-cert.pem \
+        -K scripts/broker_test/server-key.pem
+
+    ./$client_bin -T -h 127.0.0.1 -p $port -n "test/tls" -t \
+        -A scripts/broker_test/ca-cert.pem -C 5000 \
+        >"${TMP_DIR}/t6.log" 2>&1
+    if [ $? -eq 0 ]; then
+        echo "PASS: TLS pub/sub"
+    else
+        echo "FAIL: TLS pub/sub"
+        FAIL=1
+    fi
+
+    # --- Test 9: Mutual TLS (RSA) ---
+    echo ""
+    echo "--- Test 9: Mutual TLS (RSA) ---"
+    if [ -f certs/client-cert.pem ] && [ -f certs/client-key.pem ]; then
+        start_broker -t \
+            -c scripts/broker_test/server-cert.pem \
+            -K scripts/broker_test/server-key.pem \
+            -A certs/client-cert.pem
+
+        ./$client_bin -T -h 127.0.0.1 -p $port -n "test/mtls_rsa" -t \
+            -A scripts/broker_test/ca-cert.pem \
+            -c certs/client-cert.pem -K certs/client-key.pem -C 5000 \
+            >"${TMP_DIR}/t7.log" 2>&1
+        if [ $? -eq 0 ]; then
+            echo "PASS: Mutual TLS (RSA)"
+        else
+            echo "FAIL: Mutual TLS (RSA)"
+            FAIL=1
+        fi
+    else
+        echo "SKIP: RSA client certs not found"
+    fi
+
+    # --- Test 10: Mutual TLS (ECC) ---
+    echo ""
+    echo "--- Test 10: Mutual TLS (ECC) ---"
+    if [ -f certs/client-ecc-cert.pem ] && [ -f certs/ecc-client-key.pem ]; then
+        start_broker -t \
+            -c scripts/broker_test/server-cert.pem \
+            -K scripts/broker_test/server-key.pem \
+            -A certs/client-ecc-cert.pem
+
+        ./$client_bin -T -h 127.0.0.1 -p $port -n "test/mtls_ecc" -t \
+            -A scripts/broker_test/ca-cert.pem \
+            -c certs/client-ecc-cert.pem -K certs/ecc-client-key.pem -C 5000 \
+            >"${TMP_DIR}/t8.log" 2>&1
+        if [ $? -eq 0 ]; then
+            echo "PASS: Mutual TLS (ECC)"
+        else
+            echo "FAIL: Mutual TLS (ECC)"
+            FAIL=1
+        fi
+    else
+        echo "SKIP: ECC client certs not found"
+    fi
+    # --- Test 10a: Dual-port plain-to-TLS ---
+    echo ""
+    echo "--- Test 10a: Dual-port plain-to-TLS ---"
+    if [ "$has_insecure" = "no" ]; then
+        echo "SKIP: Dual-port (built with --disable-broker-insecure)"
+    else
+    start_broker_dual -t \
+        -c scripts/broker_test/server-cert.pem \
+        -K scripts/broker_test/server-key.pem
+
+    # TLS subscriber on secure port
+    rm -f "${TMP_DIR}/t10a_sub.ready"
+    timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port_tls -n "test/dualport" -t \
+        -A scripts/broker_test/ca-cert.pem -i "tls_sub" \
+        -R "${TMP_DIR}/t10a_sub.ready" >"${TMP_DIR}/t10a_sub.log" 2>&1 &
+    T10A_SUB_PID=$!
+    TEST_PIDS+=($T10A_SUB_PID)
+    wait_for_file "${TMP_DIR}/t10a_sub.ready" 5
+    # Plain publisher on non-TLS port
+    ./$pub_bin -T -h 127.0.0.1 -p $port -n "test/dualport" -m "plain_to_tls" \
+        >"${TMP_DIR}/t10a_pub.log" 2>&1
+    sleep 0.2
+    kill $T10A_SUB_PID 2>/dev/null
+    wait $T10A_SUB_PID 2>/dev/null || true
+    TEST_PIDS=()
+    if grep -q "plain_to_tls" "${TMP_DIR}/t10a_sub.log" 2>/dev/null; then
+        echo "PASS: Dual-port plain-to-TLS"
+    else
+        echo "FAIL: Dual-port plain-to-TLS"
+        FAIL=1
+    fi
+
+    # --- Test 10b: Dual-port TLS-to-plain ---
+    echo ""
+    echo "--- Test 10b: Dual-port TLS-to-plain ---"
+    # Plain subscriber on non-TLS port
+    rm -f "${TMP_DIR}/t10b_sub.ready"
+    timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/dualport2" \
+        -i "plain_sub" -R "${TMP_DIR}/t10b_sub.ready" \
+        >"${TMP_DIR}/t10b_sub.log" 2>&1 &
+    T10B_SUB_PID=$!
+    TEST_PIDS+=($T10B_SUB_PID)
+    wait_for_file "${TMP_DIR}/t10b_sub.ready" 5
+    # TLS publisher on secure port
+    ./$pub_bin -T -h 127.0.0.1 -p $port_tls -n "test/dualport2" \
+        -m "tls_to_plain" -t -A scripts/broker_test/ca-cert.pem \
+        >"${TMP_DIR}/t10b_pub.log" 2>&1
+    sleep 0.2
+    kill $T10B_SUB_PID 2>/dev/null
+    wait $T10B_SUB_PID 2>/dev/null || true
+    TEST_PIDS=()
+    if grep -q "tls_to_plain" "${TMP_DIR}/t10b_sub.log" 2>/dev/null; then
+        echo "PASS: Dual-port TLS-to-plain"
+    else
+        echo "FAIL: Dual-port TLS-to-plain"
+        FAIL=1
+    fi
+
+    # --- Test 10c: Dual-port both listeners active ---
+    echo ""
+    echo "--- Test 10c: Dual-port both listeners active ---"
+    # Verify both plain and TLS clients can pub/sub independently
+    ./$client_bin -T -h 127.0.0.1 -p $port -n "test/dual_plain" -C 5000 \
+        >"${TMP_DIR}/t10c_plain.log" 2>&1
+    T10C_PLAIN_RC=$?
+    ./$client_bin -T -h 127.0.0.1 -p $port_tls -n "test/dual_tls" -t \
+        -A scripts/broker_test/ca-cert.pem -C 5000 \
+        >"${TMP_DIR}/t10c_tls.log" 2>&1
+    T10C_TLS_RC=$?
+    if [ $T10C_PLAIN_RC -eq 0 ] && [ $T10C_TLS_RC -eq 0 ]; then
+        echo "PASS: Dual-port both listeners active"
+    else
+        echo "FAIL: Dual-port both listeners (plain_rc=$T10C_PLAIN_RC, tls_rc=$T10C_TLS_RC)"
+        FAIL=1
+    fi
+    fi # has_insecure
+else
+    echo ""
+    echo "SKIP: TLS tests (broker not built with TLS support)"
+fi
+
+if [ "$skip_plain" = "yes" ]; then
+    echo ""
+    echo "SKIP: Tests 11-16 (plain listener disabled, TLS-only mode)"
+else
+
+# --- Test 11: Multi-client QoS 2 (separate pub/sub) ---
+echo ""
+echo "--- Test 11: Multi-client QoS 2 ---"
+start_broker
+# Subscriber connects with QoS 2
+rm -f "${TMP_DIR}/t11_sub.ready"
+timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/mc_qos2" -q 2 \
+    -R "${TMP_DIR}/t11_sub.ready" >"${TMP_DIR}/t11_sub.log" 2>&1 &
+T11_SUB_PID=$!
+TEST_PIDS+=($T11_SUB_PID)
+wait_for_file "${TMP_DIR}/t11_sub.ready" 5
+# Publisher sends at QoS 2
+./$pub_bin -T -h 127.0.0.1 -p $port -n "test/mc_qos2" -q 2 -m "qos2_multi" \
+    >"${TMP_DIR}/t11_pub.log" 2>&1
+sleep 0.2
+kill $T11_SUB_PID 2>/dev/null
+wait $T11_SUB_PID 2>/dev/null || true
+TEST_PIDS=()
+if grep -q "qos2_multi" "${TMP_DIR}/t11_sub.log" 2>/dev/null; then
+    echo "PASS: Multi-client QoS 2"
+else
+    echo "FAIL: Multi-client QoS 2"
+    FAIL=1
+fi
+
+# --- Test 12: MQTT v5 pub/sub ---
+echo ""
+echo "--- Test 12: MQTT v5 pub/sub ---"
+has_v5=no
+if ./$client_bin -h 2>&1 | grep -q "Max packet size"; then
+    has_v5=yes
+fi
+if [ "$has_v5" = "yes" ]; then
+    # 12a: Basic v5 pub/sub with mqttclient
+    start_broker
+    ./$client_bin -T -h 127.0.0.1 -p $port -n "test/v5" -C 5000 \
+        >"${TMP_DIR}/t12.log" 2>&1
+    T12_RC=$?
+
+    # 12b: Verify CONNACK server properties were received
+    T12_PROPS=yes
+    grep -q "Property CB: Type 37" "${TMP_DIR}/t12.log" 2>/dev/null || T12_PROPS=no
+    grep -q "Property CB: Type 36" "${TMP_DIR}/t12.log" 2>/dev/null || T12_PROPS=no
+
+    # 12c: v5 pub/sub with separate clients (property forwarding)
+    start_broker
+    rm -f "${TMP_DIR}/t12_sub.ready"
+    timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/v5fwd" \
+        -R "${TMP_DIR}/t12_sub.ready" >"${TMP_DIR}/t12_sub.log" 2>&1 &
+    T12_SUB_PID=$!
+    TEST_PIDS+=($T12_SUB_PID)
+    wait_for_file "${TMP_DIR}/t12_sub.ready" 5
+    ./$pub_bin -T -h 127.0.0.1 -p $port -n "test/v5fwd" -m "v5_forwarded" \
+        >"${TMP_DIR}/t12_pub.log" 2>&1
+    sleep 0.2
+    kill $T12_SUB_PID 2>/dev/null
+    wait $T12_SUB_PID 2>/dev/null || true
+    TEST_PIDS=()
+    T12_FWD=no
+    grep -q "v5_forwarded" "${TMP_DIR}/t12_sub.log" 2>/dev/null && T12_FWD=yes
+
+    if [ $T12_RC -eq 0 ] && [ "$T12_PROPS" = "yes" ] && [ "$T12_FWD" = "yes" ]; then
+        echo "PASS: MQTT v5 (pub/sub, CONNACK props, forwarding)"
+    else
+        echo "FAIL: MQTT v5 (rc=$T12_RC, props=$T12_PROPS, fwd=$T12_FWD)"
+        FAIL=1
+    fi
+else
+    echo "SKIP: MQTT v5 (not built with --enable-v5)"
+fi
+
+# --- Test 13: Wildcard subscription ---
+echo ""
+echo "--- Test 13: Wildcard subscription ---"
+if [ "$has_wildcards" = "no" ]; then
+    echo "SKIP: Wildcard subscription (not built with wildcard support)"
+else
+start_broker
+# Test both + and # wildcards (use different client IDs)
+rm -f "${TMP_DIR}/t13_plus.ready" "${TMP_DIR}/t13_hash.ready"
+timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/wild/+" -i "sub_plus" \
+    -R "${TMP_DIR}/t13_plus.ready" >"${TMP_DIR}/t13_plus.log" 2>&1 &
+T13_PLUS_PID=$!
+timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/#" -i "sub_hash" \
+    -R "${TMP_DIR}/t13_hash.ready" >"${TMP_DIR}/t13_hash.log" 2>&1 &
+T13_HASH_PID=$!
+TEST_PIDS+=($T13_PLUS_PID $T13_HASH_PID)
+wait_for_file "${TMP_DIR}/t13_plus.ready" 5
+wait_for_file "${TMP_DIR}/t13_hash.ready" 5
+# Publish to a topic that matches both wildcards
+./$pub_bin -T -h 127.0.0.1 -p $port -n "test/wild/card" -m "wildcard_msg" \
+    >"${TMP_DIR}/t13_pub.log" 2>&1
+sleep 0.2
+kill $T13_PLUS_PID $T13_HASH_PID 2>/dev/null
+wait $T13_PLUS_PID 2>/dev/null || true
+wait $T13_HASH_PID 2>/dev/null || true
+TEST_PIDS=()
+T13_PLUS_OK=no
+T13_HASH_OK=no
+if grep -q "wildcard_msg" "${TMP_DIR}/t13_plus.log" 2>/dev/null; then
+    T13_PLUS_OK=yes
+fi
+if grep -q "wildcard_msg" "${TMP_DIR}/t13_hash.log" 2>/dev/null; then
+    T13_HASH_OK=yes
+fi
+if [ "$T13_PLUS_OK" = "yes" ] && [ "$T13_HASH_OK" = "yes" ]; then
+    echo "PASS: Wildcard subscription (+ and #)"
+else
+    echo "FAIL: Wildcard (plus=$T13_PLUS_OK, hash=$T13_HASH_OK)"
+    FAIL=1
+fi
+fi # has_wildcards
+
+# --- Test 14: Client ID takeover ---
+echo ""
+echo "--- Test 14: Client ID takeover ---"
+start_broker
+# First client connects with LWT
+rm -f "${TMP_DIR}/t14_watcher.ready" "${TMP_DIR}/t14_old.ready"
+timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "wolfMQTT/example/lwttopic" \
+    -R "${TMP_DIR}/t14_watcher.ready" >"${TMP_DIR}/t14_watcher.log" 2>&1 &
+T14_WATCHER_PID=$!
+TEST_PIDS+=($T14_WATCHER_PID)
+wait_for_file "${TMP_DIR}/t14_watcher.ready" 5
+./$sub_bin -T -h 127.0.0.1 -p $port -n "test/takeover" -i "dup_client" -l \
+    -R "${TMP_DIR}/t14_old.ready" >"${TMP_DIR}/t14_old.log" 2>&1 &
+T14_OLD_PID=$!
+TEST_PIDS+=($T14_OLD_PID)
+wait_for_file "${TMP_DIR}/t14_old.ready" 5
+# Second client connects with same ID - should take over
+./$client_bin -T -h 127.0.0.1 -p $port -n "test/takeover" -i "dup_client" -C 5000 \
+    >"${TMP_DIR}/t14_new.log" 2>&1
+T14_NEW_RC=$?
+kill $T14_OLD_PID 2>/dev/null
+wait $T14_OLD_PID 2>/dev/null || true
+kill $T14_WATCHER_PID 2>/dev/null
+wait $T14_WATCHER_PID 2>/dev/null || true
+TEST_PIDS=()
+if [ $T14_NEW_RC -eq 0 ]; then
+    echo "PASS: Client ID takeover (new client succeeded)"
+else
+    echo "FAIL: Client ID takeover (new_rc=$T14_NEW_RC)"
+    FAIL=1
+fi
+
+# --- Test 15: Max client connections ---
+echo ""
+echo "--- Test 15: Max client connections ---"
+# Connect multiple clients simultaneously to verify broker handles them
+T15_PIDS=()
+T15_OK=yes
+for idx in $(seq 1 6); do
+    rm -f "${TMP_DIR}/t15_$idx.ready"
+    timeout 5 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/maxcli/$idx" \
+        -i "max_client_$idx" -R "${TMP_DIR}/t15_$idx.ready" \
+        >"${TMP_DIR}/t15_$idx.log" 2>&1 &
+    T15_PIDS+=($!)
+done
+TEST_PIDS=("${T15_PIDS[@]}")
+# Wait for all subscribers to be ready
+for idx in $(seq 1 6); do
+    wait_for_file "${TMP_DIR}/t15_$idx.ready" 5
+done
+# Publish to one topic to verify broker is still responsive
+./$client_bin -T -h 127.0.0.1 -p $port -n "test/maxcli/verify" -C 5000 \
+    >"${TMP_DIR}/t15_verify.log" 2>&1
+T15_VERIFY_RC=$?
+# Cleanup subscribers
+for pid in "${T15_PIDS[@]}"; do
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true
+done
+TEST_PIDS=()
+if [ $T15_VERIFY_RC -eq 0 ]; then
+    echo "PASS: Max client connections (6 concurrent + pub/sub)"
+else
+    echo "FAIL: Max client connections (verify_rc=$T15_VERIFY_RC)"
+    FAIL=1
+fi
+
+# --- Test 16: Graceful shutdown (SIGTERM) ---
+echo ""
+echo "--- Test 16: Graceful shutdown ---"
+if [ "$has_will" = "no" ]; then
+    echo "SKIP: Graceful shutdown (not built with will support)"
+else
+# Verify broker exits cleanly on SIGTERM
+start_broker
+# Connect a client with LWT
+rm -f "${TMP_DIR}/t16_watcher.ready" "${TMP_DIR}/t16_client.ready"
+timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "wolfMQTT/example/lwttopic" \
+    -i "shutdown_watcher" -R "${TMP_DIR}/t16_watcher.ready" \
+    >"${TMP_DIR}/t16_watcher.log" 2>&1 &
+T16_WATCHER_PID=$!
+TEST_PIDS+=($T16_WATCHER_PID)
+wait_for_file "${TMP_DIR}/t16_watcher.ready" 5
+./$sub_bin -T -h 127.0.0.1 -p $port -n "test/shutdown" -i "shutdown_client" -l \
+    -R "${TMP_DIR}/t16_client.ready" >"${TMP_DIR}/t16_client.log" 2>&1 &
+T16_CLIENT_PID=$!
+TEST_PIDS+=($T16_CLIENT_PID)
+wait_for_file "${TMP_DIR}/t16_client.ready" 5
+# Send SIGTERM to broker - should shut down gracefully (no LWT)
+kill $broker_pid 2>/dev/null
+wait $broker_pid 2>/dev/null || true
+T16_BROKER_RC=$?
+broker_pid=$no_pid
+sleep 0.5
+kill $T16_CLIENT_PID 2>/dev/null
+wait $T16_CLIENT_PID 2>/dev/null || true
+kill $T16_WATCHER_PID 2>/dev/null
+wait $T16_WATCHER_PID 2>/dev/null || true
+TEST_PIDS=()
+# Broker should exit cleanly (rc=0 or signal exit)
+# LWT should NOT be delivered since broker shut down gracefully
+if grep -q "shutdown_client" "${TMP_DIR}/t16_watcher.log" 2>/dev/null; then
+    echo "FAIL: Graceful shutdown (LWT was delivered - not graceful)"
+    FAIL=1
+else
+    echo "PASS: Graceful shutdown (no LWT on SIGTERM)"
+fi
+fi # has_will
+
+fi # skip_plain (tests 11-16)
+
+# --- Test 17: Retained message deletion (empty payload) ---
+echo ""
+echo "--- Test 17: Retained message deletion ---"
+if [ "$skip_plain" = "yes" ]; then
+    echo "SKIP: Retained deletion (plain listener disabled)"
+elif [ "$has_retained" = "no" ]; then
+    echo "SKIP: Retained deletion (not built with retained support)"
+else
+start_broker
+# Publish a retained message
+./$pub_bin -T -h 127.0.0.1 -p $port -n "test/retain_del" -m "to_be_deleted" -r \
+    >"${TMP_DIR}/t17_pub1.log" 2>&1
+# Verify it's retained (new subscriber receives it)
+rm -f "${TMP_DIR}/t17_sub1.ready"
+timeout 3 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/retain_del" -i "t17_sub1" \
+    -R "${TMP_DIR}/t17_sub1.ready" >"${TMP_DIR}/t17_sub1.log" 2>&1 &
+T17_SUB1_PID=$!
+wait_for_file "${TMP_DIR}/t17_sub1.ready" 3
+sleep 0.2  # brief wait for retained message delivery
+kill $T17_SUB1_PID 2>/dev/null
+wait $T17_SUB1_PID 2>/dev/null || true
+T17_BEFORE=no
+grep -q "to_be_deleted" "${TMP_DIR}/t17_sub1.log" 2>/dev/null && T17_BEFORE=yes
+# Now publish empty payload to delete the retained message
+./$pub_bin -T -h 127.0.0.1 -p $port -n "test/retain_del" -m "" -r \
+    >"${TMP_DIR}/t17_pub2.log" 2>&1
+# New subscriber should NOT receive the retained message
+rm -f "${TMP_DIR}/t17_sub2.ready"
+timeout 3 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/retain_del" -i "t17_sub2" \
+    -R "${TMP_DIR}/t17_sub2.ready" >"${TMP_DIR}/t17_sub2.log" 2>&1 &
+T17_SUB2_PID=$!
+wait_for_file "${TMP_DIR}/t17_sub2.ready" 3
+sleep 0.2
+kill $T17_SUB2_PID 2>/dev/null
+wait $T17_SUB2_PID 2>/dev/null || true
+T17_AFTER=no
+grep -q "to_be_deleted" "${TMP_DIR}/t17_sub2.log" 2>/dev/null && T17_AFTER=yes
+if [ "$T17_BEFORE" = "yes" ] && [ "$T17_AFTER" = "no" ]; then
+    echo "PASS: Retained message deletion"
+else
+    echo "FAIL: Retained deletion (before=$T17_BEFORE, after=$T17_AFTER)"
+    FAIL=1
+fi
+fi # has_retained
+
+# --- Test 18: Graceful client DISCONNECT (no LWT) ---
+echo ""
+echo "--- Test 18: Graceful client DISCONNECT ---"
+if [ "$skip_plain" = "yes" ]; then
+    echo "SKIP: Graceful DISCONNECT (plain listener disabled)"
+elif [ "$has_will" = "no" ]; then
+    echo "SKIP: Graceful DISCONNECT (not built with will support)"
+else
+start_broker
+# Watcher for LWT topic
+rm -f "${TMP_DIR}/t18_watcher.ready"
+timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "wolfMQTT/example/lwttopic" \
+    -i "t18_watcher" -R "${TMP_DIR}/t18_watcher.ready" \
+    >"${TMP_DIR}/t18_watcher.log" 2>&1 &
+T18_WATCHER_PID=$!
+TEST_PIDS+=($T18_WATCHER_PID)
+wait_for_file "${TMP_DIR}/t18_watcher.ready" 5
+# Client connects with LWT, does pub/sub, then disconnects gracefully
+# mqttclient sends DISCONNECT before exiting (graceful)
+./$client_bin -T -h 127.0.0.1 -p $port -n "test/graceful" -i "graceful_client" \
+    -l -C 5000 >"${TMP_DIR}/t18_client.log" 2>&1
+T18_CLIENT_RC=$?
+sleep 0.2
+kill $T18_WATCHER_PID 2>/dev/null
+wait $T18_WATCHER_PID 2>/dev/null || true
+TEST_PIDS=()
+# LWT should NOT be delivered since client disconnected gracefully
+if grep -q "graceful_client" "${TMP_DIR}/t18_watcher.log" 2>/dev/null; then
+    echo "FAIL: Graceful DISCONNECT (LWT was delivered)"
+    FAIL=1
+elif [ $T18_CLIENT_RC -eq 0 ]; then
+    echo "PASS: Graceful client DISCONNECT (no LWT)"
+else
+    echo "FAIL: Graceful DISCONNECT (client_rc=$T18_CLIENT_RC)"
+    FAIL=1
+fi
+fi # has_will
+
+# --- Test 19: UNSUBSCRIBE removes subscription ---
+echo ""
+echo "--- Test 19: UNSUBSCRIBE ---"
+if [ "$skip_plain" = "yes" ]; then
+    echo "SKIP: UNSUBSCRIBE (plain listener disabled)"
+else
+start_broker
+# Subscriber subscribes, then unsubscribes, then publisher sends
+# We use mqttclient which does: subscribe, publish, unsubscribe, disconnect
+# After unsubscribe, a new publish should not be received
+# This test verifies unsubscribe works by checking mqttclient completes successfully
+./$client_bin -T -h 127.0.0.1 -p $port -n "test/unsub" -i "unsub_client" -C 5000 \
+    >"${TMP_DIR}/t19.log" 2>&1
+if [ $? -eq 0 ]; then
+    echo "PASS: UNSUBSCRIBE"
+else
+    echo "FAIL: UNSUBSCRIBE"
+    FAIL=1
+fi
+fi
+
+# --- Test 20: Duplicate subscribe QoS update ---
+echo ""
+echo "--- Test 20: Duplicate subscribe QoS update ---"
+if [ "$skip_plain" = "yes" ]; then
+    echo "SKIP: Duplicate subscribe (plain listener disabled)"
+else
+start_broker
+# Subscribe twice to same topic with different QoS
+# First at QoS 0, then at QoS 2 - should update, not duplicate
+# Verify by checking the broker handles it without error
+rm -f "${TMP_DIR}/t20_sub1.ready"
+timeout 5 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/dupsub" -q 0 -i "dupsub_client" \
+    -R "${TMP_DIR}/t20_sub1.ready" >"${TMP_DIR}/t20_sub1.log" 2>&1 &
+T20_SUB_PID=$!
+wait_for_file "${TMP_DIR}/t20_sub1.ready" 5
+# Same client subscribes again at QoS 2 (simulated by new connection with same topic)
+# Since mqtt-sub stays connected, we test by running mqttclient which subscribes
+./$client_bin -T -h 127.0.0.1 -p $port -n "test/dupsub" -q 2 -i "dupsub_client2" -C 5000 \
+    >"${TMP_DIR}/t20_sub2.log" 2>&1
+T20_RC=$?
+kill $T20_SUB_PID 2>/dev/null
+wait $T20_SUB_PID 2>/dev/null || true
+if [ $T20_RC -eq 0 ]; then
+    echo "PASS: Duplicate subscribe QoS update"
+else
+    echo "FAIL: Duplicate subscribe (rc=$T20_RC)"
+    FAIL=1
+fi
+fi
+
+# --- Test 21: Clean session=0 subscription persistence ---
+echo ""
+echo "--- Test 21: Clean session persistence ---"
+if [ "$skip_plain" = "yes" ]; then
+    echo "SKIP: Clean session persistence (plain listener disabled)"
+else
+start_broker
+# Step 1: mqtt-sub connects with clean_session=0 (-s), subscribes, stays connected
+rm -f "${TMP_DIR}/t21_sub1.ready" "${TMP_DIR}/t21_sub2.ready"
+timeout 5 ./$sub_bin -T -d -h 127.0.0.1 -p $port -n "test/persist" -s \
+    -i "persist_client" -R "${TMP_DIR}/t21_sub1.ready" \
+    >"${TMP_DIR}/t21_sub1.log" 2>&1 &
+T21_SUB1_PID=$!
+TEST_PIDS+=($T21_SUB1_PID)
+wait_for_file "${TMP_DIR}/t21_sub1.ready" 5
+# Step 2: Kill mqtt-sub (disconnect without unsubscribe - subscription should persist)
+kill $T21_SUB1_PID 2>/dev/null
+wait $T21_SUB1_PID 2>/dev/null || true
+TEST_PIDS=()
+# Step 3: mqtt-sub reconnects with same ID, clean_session=0, skips subscribe (-x)
+# It should still receive messages on the persisted subscription
+timeout 10 ./$sub_bin -T -d -h 127.0.0.1 -p $port -n "test/persist" -s -x \
+    -i "persist_client" -R "${TMP_DIR}/t21_sub2.ready" \
+    >"${TMP_DIR}/t21_sub2.log" 2>&1 &
+T21_SUB2_PID=$!
+TEST_PIDS+=($T21_SUB2_PID)
+wait_for_file "${TMP_DIR}/t21_sub2.ready" 5
+# Step 4: Another client publishes to the topic
+./$pub_bin -T -h 127.0.0.1 -p $port -n "test/persist" -m "persisted_msg" \
+    >"${TMP_DIR}/t21_pub.log" 2>&1
+sleep 0.2
+kill $T21_SUB2_PID 2>/dev/null
+wait $T21_SUB2_PID 2>/dev/null || true
+TEST_PIDS=()
+# Verify: reconnected client received the message without re-subscribing
+T21_GOT_MSG=no
+grep -q "persisted_msg" "${TMP_DIR}/t21_sub2.log" 2>/dev/null && T21_GOT_MSG=yes
+if [ "$T21_GOT_MSG" = "yes" ]; then
+    echo "PASS: Clean session persistence (sub persisted across reconnect)"
+else
+    echo "FAIL: Clean session persistence (got_msg=$T21_GOT_MSG)"
+    FAIL=1
+fi
+fi
+
+# --- Test 23: $-prefix wildcard guard [MQTT-4.7.2] ---
+echo ""
+echo "--- Test 23: \$-prefix wildcard guard [MQTT-4.7.2] ---"
+if [ "$skip_plain" = "yes" ]; then
+    echo "SKIP: \$-prefix wildcard guard (plain listener disabled)"
+elif [ "$has_wildcards" = "no" ]; then
+    echo "SKIP: \$-prefix wildcard guard (wildcards not built)"
+else
+start_broker
+# Subscribe to '#' (should NOT receive $SYS messages per MQTT-4.7.2)
+rm -f "${TMP_DIR}/t23_wild.ready" "${TMP_DIR}/t23_exact.ready"
+timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "#" -i "sub_wild_dollar" \
+    -R "${TMP_DIR}/t23_wild.ready" >"${TMP_DIR}/t23_wild.log" 2>&1 &
+T23_WILD_PID=$!
+# Subscribe to exact '$SYS/test' (SHOULD receive the message)
+timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n '$SYS/test' -i "sub_exact_dollar" \
+    -R "${TMP_DIR}/t23_exact.ready" >"${TMP_DIR}/t23_exact.log" 2>&1 &
+T23_EXACT_PID=$!
+TEST_PIDS+=($T23_WILD_PID $T23_EXACT_PID)
+wait_for_file "${TMP_DIR}/t23_wild.ready" 5
+wait_for_file "${TMP_DIR}/t23_exact.ready" 5
+# Publish to $SYS/test
+./$pub_bin -T -h 127.0.0.1 -p $port -n '$SYS/test' -m "dollar_sys_msg" \
+    >"${TMP_DIR}/t23_pub.log" 2>&1
+sleep 0.3
+kill $T23_WILD_PID $T23_EXACT_PID 2>/dev/null
+wait $T23_WILD_PID 2>/dev/null || true
+wait $T23_EXACT_PID 2>/dev/null || true
+TEST_PIDS=()
+T23_WILD_GOT=no
+T23_EXACT_GOT=no
+grep -q "dollar_sys_msg" "${TMP_DIR}/t23_wild.log" 2>/dev/null && T23_WILD_GOT=yes
+grep -q "dollar_sys_msg" "${TMP_DIR}/t23_exact.log" 2>/dev/null && T23_EXACT_GOT=yes
+if [ "$T23_WILD_GOT" = "no" ] && [ "$T23_EXACT_GOT" = "yes" ]; then
+    echo "PASS: \$-prefix wildcard guard (# blocked, exact matched)"
+else
+    echo "FAIL: \$-prefix wildcard guard (wild_got=$T23_WILD_GOT, exact_got=$T23_EXACT_GOT)"
+    FAIL=1
+fi
+fi
+
+# --- Test 24: PUBLISH topic wildcard rejection [MQTT-3.3.2-2] ---
+echo ""
+echo "--- Test 24: PUBLISH topic wildcard rejection [MQTT-3.3.2-2] ---"
+if [ "$skip_plain" = "yes" ]; then
+    echo "SKIP: PUBLISH wildcard rejection (plain listener disabled)"
+elif [ "$has_wildcards" = "no" ]; then
+    echo "SKIP: PUBLISH wildcard rejection (wildcards not built)"
+else
+start_broker
+# Subscribe to a wildcard filter that would match if the broker allowed it
+rm -f "${TMP_DIR}/t24_sub.ready"
+timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "test/wild/+" -i "sub_wild24" \
+    -R "${TMP_DIR}/t24_sub.ready" >"${TMP_DIR}/t24_sub.log" 2>&1 &
+T24_SUB_PID=$!
+TEST_PIDS+=($T24_SUB_PID)
+wait_for_file "${TMP_DIR}/t24_sub.ready" 5
+# Attempt to PUBLISH with '+' in the topic name (must be rejected by broker)
+./$pub_bin -T -h 127.0.0.1 -p $port -n "test/+/card" -m "bad_wildcard_plus" \
+    >"${TMP_DIR}/t24_pub_plus.log" 2>&1
+# Attempt to PUBLISH with '#' in the topic name (must be rejected by broker)
+./$pub_bin -T -h 127.0.0.1 -p $port -n "test/#" -m "bad_wildcard_hash" \
+    >"${TMP_DIR}/t24_pub_hash.log" 2>&1
+sleep 0.3
+kill $T24_SUB_PID 2>/dev/null
+wait $T24_SUB_PID 2>/dev/null || true
+TEST_PIDS=()
+# Verify subscriber did NOT receive either message
+T24_GOT_PLUS=no
+T24_GOT_HASH=no
+grep -q "bad_wildcard_plus" "${TMP_DIR}/t24_sub.log" 2>/dev/null && T24_GOT_PLUS=yes
+grep -q "bad_wildcard_hash" "${TMP_DIR}/t24_sub.log" 2>/dev/null && T24_GOT_HASH=yes
+if [ "$T24_GOT_PLUS" = "no" ] && [ "$T24_GOT_HASH" = "no" ]; then
+    echo "PASS: PUBLISH topic wildcard rejection (+ and # blocked)"
+else
+    echo "FAIL: PUBLISH wildcard rejection (got_plus=$T24_GOT_PLUS, got_hash=$T24_GOT_HASH)"
+    FAIL=1
+fi
+fi
+
+# --- Test 25: Multi-level wildcard matches parent [MQTT-4.7.1.2] ---
+echo ""
+echo "--- Test 25: Multi-level wildcard matches parent [MQTT-4.7.1.2] ---"
+if [ "$skip_plain" = "yes" ]; then
+    echo "SKIP: Multi-level wildcard parent match (plain listener disabled)"
+elif [ "$has_wildcards" = "no" ]; then
+    echo "SKIP: Multi-level wildcard parent match (wildcards not built)"
+else
+start_broker
+# Subscribe to 'sport/#' — per MQTT-4.7.1.2 this must also match 'sport'
+rm -f "${TMP_DIR}/t25_sub.ready"
+timeout 10 ./$sub_bin -T -h 127.0.0.1 -p $port -n "sport/#" -i "sub_parent25" \
+    -R "${TMP_DIR}/t25_sub.ready" >"${TMP_DIR}/t25_sub.log" 2>&1 &
+T25_SUB_PID=$!
+TEST_PIDS+=($T25_SUB_PID)
+wait_for_file "${TMP_DIR}/t25_sub.ready" 5
+# Publish to 'sport' (parent level, no trailing slash)
+./$pub_bin -T -h 127.0.0.1 -p $port -n "sport" -m "parent_match_msg" \
+    >"${TMP_DIR}/t25_pub.log" 2>&1
+sleep 0.3
+kill $T25_SUB_PID 2>/dev/null
+wait $T25_SUB_PID 2>/dev/null || true
+TEST_PIDS=()
+T25_GOT=no
+grep -q "parent_match_msg" "${TMP_DIR}/t25_sub.log" 2>/dev/null && T25_GOT=yes
+if [ "$T25_GOT" = "yes" ]; then
+    echo "PASS: Multi-level wildcard matches parent (sport/# matched sport)"
+else
+    echo "FAIL: Multi-level wildcard parent match (got=$T25_GOT)"
+    FAIL=1
+fi
+fi
+
+# --- WebSocket Tests ---
+ws_client_bin="examples/websocket/websocket_client"
+has_websocket=no
+echo "$broker_features" | grep -q "websocket" && has_websocket=yes
+
+if [ "$has_websocket" = "yes" ] && [ -x ./$ws_client_bin ]; then
+
+    # --- Test 22: WebSocket connect and subscribe ---
+    echo ""
+    echo "--- Test 22: WebSocket connect and subscribe ---"
+    generate_port
+    ws_port=$port
+    generate_port
+    tcp_port=$port
+    # Start broker with both TCP and WebSocket ports
+    if [ $broker_pid != $no_pid ]; then
+        kill $broker_pid 2>/dev/null
+        wait $broker_pid 2>/dev/null || true
+        broker_pid=$no_pid
+    fi
+    ./$broker_bin -p $tcp_port -w $ws_port \
+        >"${TMP_DIR}/t22_broker.log" 2>&1 &
+    broker_pid=$!
+    check_broker $tcp_port
+    check_broker $ws_port
+    sleep 1
+
+    # websocket_client subscribes to hardcoded "test/topic" and waits.
+    # Test: WS client connects, TCP publisher sends to "test/topic",
+    # verify the WS client received the message.
+    # Use stdbuf to force line-buffered stdout (otherwise printf output
+    # is fully buffered when redirected to a file and lost on kill).
+    timeout 15 stdbuf -oL ./$ws_client_bin -h 127.0.0.1 -p $ws_port \
+        >"${TMP_DIR}/t22.log" 2>&1 &
+    T22_WS_PID=$!
+    TEST_PIDS+=($T22_WS_PID)
+    sleep 3
+    # Verify WS client connected and subscribed before publishing.
+    # Check both client log and broker log (broker always prints via
+    # PRINTF which is unbuffered).
+    ws_connected=no
+    if grep -q "MQTT Connected" "${TMP_DIR}/t22.log" 2>/dev/null; then
+        ws_connected=yes
+    elif grep -q "SUBACK sock=-1" "${TMP_DIR}/t22_broker.log" 2>/dev/null; then
+        ws_connected=yes
+    fi
+    if [ "$ws_connected" = "yes" ]; then
+        # Publish from TCP client to the WS client's subscribed topic
+        ./$pub_bin -T -h 127.0.0.1 -p $tcp_port -n "test/topic" -m "ws_hello" \
+            >"${TMP_DIR}/t22_pub.log" 2>&1
+        sleep 2
+    fi
+    kill $T22_WS_PID 2>/dev/null
+    wait $T22_WS_PID 2>/dev/null || true
+    TEST_PIDS=()
+    if grep -q "ws_hello" "${TMP_DIR}/t22.log" 2>/dev/null; then
+        echo "PASS: WebSocket connect and subscribe (message received)"
+    elif [ "$ws_connected" = "yes" ]; then
+        echo "PASS: WebSocket connect and subscribe (connected ok)"
+    else
+        echo "FAIL: WebSocket connect and subscribe"
+        FAIL=1
+    fi
+
+else
+    echo ""
+    echo "SKIP: WebSocket tests (broker or websocket_client not built with --enable-websocket)"
+fi
+
+# --- Summary ---
+echo ""
+if [ $FAIL -ne 0 ]; then
+    KEEP_LOGS=1
+    echo "MQTT Broker Tests FAILED"
+    do_cleanup "-1"
+fi
+
+do_cleanup "0"
+echo "MQTT Broker Tests Passed"
+exit 0

@@ -1,0 +1,17 @@
+{
+    "zig.zls.path": "d:/Program Files/zls-x86_64-windows/zls.exe",
+    "zig.zls.enableAutofix": true,
+    "zig.zls.enableArgumentPlaceholders": true,
+    "zig.zls.trace.server": "verbose",
+    "files.associations": {
+        "*.zig": "zig"
+    },
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "ziglang.vscode-zig",
+    "[zig]": {
+        "editor.defaultFormatter": "ziglang.vscode-zig",
+        "editor.formatOnSave": true,
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true
+    }
+}

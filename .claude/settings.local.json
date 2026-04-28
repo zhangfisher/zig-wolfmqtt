@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where zls *)",
+      "Bash(zls --version)",
+      "Bash(code --list-extensions)",
+      "Bash(zls --help)",
+      "Bash(zls env *)",
+      "Bash(where zig *)",
+      "Bash(zig version *)",
+      "Bash(zig build-exe *)",
+      "Bash(zig cc *)",
+      "Bash(gcc -c mqtt_wrapper.c -I . -I ./zig-cache/include -DENABLE_MQTT_TLS=0 -o mqtt_wrapper.o)",
+      "Bash(cl /nologo /c mqtt_wrapper.c -I . /DENABLE_MQTT_TLS=0)",
+      "Bash(where cl.exe)",
+      "Bash(zig build-obj *)",
+      "Bash(zig build *)",
+      "Bash(zig zig-out/bin/demo)",
+      "Bash(zig toolchain *)",
+      "Bash(file zig-out/bin/*)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "Bash(zig test *)",
+      "Bash(zig fmt *)",
+      "Bash(xargs grep *)",
+      "Bash(ls -la zig-out/bin/)",
+      "Bash(dir \"zig-out\\\\bin\")",
+      "Bash(timeout 10 zig run test_connect.zig)",
+      "Bash(\"C:\\\\Program Files\\\\zig\\\\zig.exe\" cat-file \"..\\\\lib\\\\std\\\\Io\\\\net\\\\address.zig\")",
+      "Bash(\"C:\\\\Program Files\\\\zig\\\\zig.exe\" std Io.net)",
+      "Bash(\"C:\\\\Program Files\\\\zig\\\\zig.exe\" build -Dtls=true)",
+      "Bash(readelf -l \"e:/Work/Code/zig/wolfMQTT/zig-out/broker/arm/linux/gnueabihf/mqtt_broker\")",
+      "Bash(ldd \"zig-out/broker/arm/linux/gnueabihf/mqtt_broker\")",
+      "Read(//d/Temp/nfs/sys/**)",
+      "Read(//d/Temp/nfs/sys//**)",
+      "Bash(arm-linux-gnueabihf-readelf -d \"zig-out/broker/arm/linux/gnueabihf/mqtt_broker\")",
+      "Bash(zig objcopy *)",
+      "Bash(zig clang *)"
+    ]
+  }
+}

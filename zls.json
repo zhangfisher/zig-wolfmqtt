@@ -1,0 +1,18 @@
+{
+    "zig_path": "c:/Program Files/zig/zig.exe",
+    "zig_lib_dir": "c:/Program Files/zig/lib",
+    "enable_snippets": true,
+    "enable_argument_placeholders": true,
+    "enable_autofix": true,
+    "warn_style": true,
+    "highlight_global_var_declarations": true,
+    "inlay_hints.show_builtin": true,
+    "inlay_hints.show_parameter_name": true,
+    "inlay_hints.show_variable_name": true,
+    "inlay_hints.exclude_single_argument": true,
+    "completions_with_replace": true,
+    "semantic_tokens": "full",
+    "max_detail_length": 1048576,
+    "skip_std_references": false,
+    "builtin_path": null
+}
