@@ -55,12 +55,13 @@
 /* -------------------------------------------------------------------------- */
 /* Log levels                                                                  */
 /* -------------------------------------------------------------------------- */
-#define BROKER_LOG_ERROR  1
-#define BROKER_LOG_INFO   2
-#define BROKER_LOG_DEBUG  3
+#include "wolfmqtt/logger.h"
+
+/* Log callback function type */
+typedef void (*MqttBrokerLogCb)(LogLevel level, const char* format, va_list args);
 
 #ifndef BROKER_LOG_LEVEL_DEFAULT
-    #define BROKER_LOG_LEVEL_DEFAULT  BROKER_LOG_INFO
+    #define BROKER_LOG_LEVEL_DEFAULT  LOG_LEVEL_INFO
 #endif
 
 /* -------------------------------------------------------------------------- */
@@ -122,49 +123,8 @@
     #define BROKER_MAX_TOPIC_ALIASES 16  /* 每个客户端最大主题别名数 */
 #endif
 
-/* -------------------------------------------------------------------------- */
-/* Broker runtime options structure (Broker运行时配置选项)                     */
-/* -------------------------------------------------------------------------- */
-typedef struct BrokerOptions {
-    /* Buffer sizes (缓冲区大小配置) */
-    word16 rx_buf_sz;           /* 每个客户端的接收缓冲区大小(字节) */
-    word16 tx_buf_sz;           /* 每个客户端的发送缓冲区大小(字节) */
-    word16 timeout_ms;          /* 网络超时时间(毫秒) */
-    word16 listen_backlog;      /* 监听套接字的等待队列长度 */
-
-    /* Capacity limits (容量限制) */
-    word16 max_clients;         /* 最大并发客户端数量 */
-    word16 max_subs;            /* 最大订阅数量 */
-    word16 max_retained;        /* 最大保留消息数量 */
-    word16 max_pending_wills;   /* 最大待处理遗嘱消息数量 */
-
-    /* String length limits (字符串长度限制) */
-    word16 max_client_id_len;   /* 客户端ID最大长度 */
-    word16 max_username_len;    /* 用户名最大长度 */
-    word16 max_password_len;    /* 密码最大长度 */
-    word16 max_filter_len;      /* 主题过滤器最大长度 */
-    word16 max_topic_len;       /* 主题名称最大长度 */
-    word16 max_payload_len;     /* 消息负载最大大小(字节) */
-    word16 max_will_payload_len;/* 遗嘱消息负载最大大小(字节) */
-
-#ifdef WOLFMQTT_V5
-    /* MQTT 5 Flow control settings (MQTT 5 流控设置) */
-    word32 max_packet_size;     /* Broker最大包大小(0=无限制) */
-    word16 topic_alias_max;     /* Broker主题别名最大值 */
-    byte   max_qos;             /* Broker支持的最大QoS (0-2) */
-    byte   retain_avail;        /* 是否支持保留消息 (0/1) */
-    byte   wildcard_sub_avail;  /* 是否支持通配符订阅 (0/1) */
-    byte   sub_id_avail;        /* 是否支持订阅标识符 (0/1) */
-    byte   shared_sub_avail;    /* 是否支持共享订阅 (0/1) */
-#endif
-    /* Session persistence defaults (会话持久化默认值) */
-    word32 default_session_expiry_interval; /* 默认会话过期间隔(秒), 当客户端未指定Session Expiry Interval且clean=0时使用 */
-    /* Statistics settings (统计设置) */
-    word32 stats_interval;      /* 统计消息发送间隔(秒), 0=禁用, 默认=5 */
-} BrokerOptions;
-
-/* BrokerOptions 默认值宏定义 */
-#define BROKER_OPTIONS_DEFAULTS \
+/* Broker 默认值宏定义 */
+#define MQTT_BROKER_DEFAULTS \
     .rx_buf_sz = BROKER_RX_BUF_SZ, \
     .tx_buf_sz = BROKER_TX_BUF_SZ, \
     .timeout_ms = BROKER_TIMEOUT_MS, \
@@ -292,31 +252,6 @@ typedef struct MqttBrokerNet {
 } MqttBrokerNet;
 
 /* -------------------------------------------------------------------------- */
-/* WebSocket per-client context                                                */
-/* -------------------------------------------------------------------------- */
-#ifdef ENABLE_MQTT_WEBSOCKET
-#ifdef WOLFMQTT_STATIC_MEMORY
-    #error "WebSocket support (ENABLE_MQTT_WEBSOCKET) is incompatible with " \
-           "static memory mode (WOLFMQTT_STATIC_MEMORY). libwebsockets " \
-           "requires dynamic allocation internally."
-#endif
-#ifndef BROKER_WS_RX_BUF_SZ
-    #define BROKER_WS_RX_BUF_SZ  BROKER_RX_BUF_SZ
-#endif
-typedef struct BrokerWsCtx {
-    void  *wsi;                 /* struct lws* (opaque to avoid lws header) */
-    byte   rx_buffer[BROKER_WS_RX_BUF_SZ];
-    size_t rx_len;
-    byte  *tx_pending;          /* allocated with LWS_PRE prefix room */
-    size_t tx_len;
-    int    status;              /* 1=established, 0=closed, -1=error */
-    int    pending_close;       /* 1 when broker-initiated close is in progress */
-    int    processing;          /* 1 while BrokerClient_Process is dispatching a packet */
-    int    pending_remove;      /* 1 when peer closed during processing; deferred free */
-} BrokerWsCtx;
-#endif /* ENABLE_MQTT_WEBSOCKET */
-
-/* -------------------------------------------------------------------------- */
 /* Broker client tracking                                                      */
 /* -------------------------------------------------------------------------- */
 
@@ -403,9 +338,6 @@ typedef struct BrokerClient {
     struct MqttBroker* broker;  /* back-pointer to parent broker context */
 #ifdef ENABLE_MQTT_TLS
     byte    tls_handshake_done;
-#endif
-#ifdef ENABLE_MQTT_WEBSOCKET
-    void   *ws_ctx;             /* BrokerWsCtx* (NULL for TCP clients) */
 #endif
 } BrokerClient;
 
@@ -494,14 +426,46 @@ typedef struct MqttBroker {
     BROKER_SOCKET_T listen_sock;
     word16  port;
     int     running;
-    byte    log_level;
+    byte    log_level;         /* 日志级别 */
+    MqttBrokerLogCb log;       /* 日志回调函数 (NULL则使用默认输出) */
 #ifdef WOLFMQTT_BROKER_AUTH
     const char* auth_user;
     const char* auth_pass;
 #endif
     MqttBrokerNet net;
     word16  next_packet_id;
-    BrokerOptions options;  /* 运行时配置选项 */
+
+    /* Buffer sizes (缓冲区大小配置) */
+    word16 rx_buf_sz;           /* 每个客户端的接收缓冲区大小(字节) */
+    word16 tx_buf_sz;           /* 每个客户端的发送缓冲区大小(字节) */
+    word16 timeout_ms;          /* 网络超时时间(毫秒) */
+    word16 listen_backlog;      /* 监听套接字的等待队列长度 */
+
+    /* Capacity limits (容量限制) */
+    word16 max_clients;         /* 最大并发客户端数量 */
+    word16 max_subs;            /* 最大订阅数量 */
+    word16 max_retained;        /* 最大保留消息数量 */
+    word16 max_pending_wills;   /* 最大待处理遗嘱消息数量 */
+
+    /* String length limits (字符串长度限制) */
+    word16 max_client_id_len;   /* 客户端ID最大长度 */
+    word16 max_username_len;    /* 用户名最大长度 */
+    word16 max_password_len;    /* 密码最大长度 */
+    word16 max_filter_len;      /* 主题过滤器最大长度 */
+    word16 max_topic_len;       /* 主题名称最大长度 */
+    word16 max_payload_len;     /* 消息负载最大大小(字节) */
+    word16 max_will_payload_len;/* 遗嘱消息负载最大大小(字节) */
+
+#ifdef WOLFMQTT_V5
+    /* MQTT 5 Flow control settings (MQTT 5 流控设置) */
+    word32 max_packet_size;     /* Broker最大包大小(0=无限制) */
+    word16 topic_alias_max;     /* Broker主题别名最大值 */
+#endif
+    /* Session persistence defaults (会话持久化默认值) */
+    word32 default_session_expiry_interval; /* 默认会话过期间隔(秒), 当客户端未指定Session Expiry Interval且clean=0时使用 */
+    /* Statistics settings (统计设置) */
+    word32 stats_interval;      /* 统计消息发送间隔(秒), 0=禁用, 默认=5 */
+
 #ifdef ENABLE_MQTT_TLS
     BROKER_SOCKET_T listen_sock_tls; /* TLS listener socket */
     word16       port_tls;           /* TLS port (default 8883) */
@@ -532,16 +496,8 @@ typedef struct MqttBroker {
     BrokerPendingWill* pending_wills;
 #endif
 #endif
-#ifdef ENABLE_MQTT_WEBSOCKET
-    void   *ws_ctx;             /* struct lws_context* (opaque) */
-    word16  ws_port;
-    byte    use_websocket;
-    const char *ws_tls_cert;
-    const char *ws_tls_key;
-    const char *ws_tls_ca;
-#endif
     BrokerStats stats;          /* 统计数据 */
-    byte stats_enabled;         /* 统计功能启用标志 */
+    byte enable_stats;          /* 统计功能启用标志 */
     WOLFMQTT_BROKER_TIME_T last_stats_time; /* 上次发送统计消息的时间 */
 
     /* 连接/断开回调 (可选) */
@@ -558,13 +514,6 @@ WOLFMQTT_API int MqttBroker_Init(MqttBroker* broker);
 
 /* Initialize the broker context with custom network callbacks (使用自定义网络回调初始化broker) */
 WOLFMQTT_API int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net);
-
-/* Get broker runtime options (获取broker运行时配置选项) */
-WOLFMQTT_API int MqttBroker_GetOptions(MqttBroker* broker, BrokerOptions* options);
-
-/* Set broker runtime options - must be called before MqttBroker_Start
-   (设置broker运行时配置选项 - 必须在MqttBroker_Start之前调用) */
-WOLFMQTT_API int MqttBroker_SetOptions(MqttBroker* broker, const BrokerOptions* options);
 
 /* Get broker statistics (获取broker统计数据) */
 WOLFMQTT_API int MqttBroker_GetStats(MqttBroker* broker, BrokerStats* stats);

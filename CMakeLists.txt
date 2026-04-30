@@ -155,35 +155,6 @@ if (WOLFMQTT_CURL)
     list(APPEND WOLFMQTT_DEFINITIONS "-DENABLE_MQTT_CURL")
 endif()
 
-# WebSocket
-option(ENABLE_WEBSOCKET "Enable WebSocket support" OFF)
-if(ENABLE_WEBSOCKET)
-    # Add define
-    add_definitions(-DENABLE_MQTT_WEBSOCKET)
-    
-    # Find libwebsockets
-    find_package(PkgConfig QUIET)
-    if(PKG_CONFIG_FOUND)
-        pkg_check_modules(LIBWEBSOCKETS libwebsockets>=2.0.0)
-    endif()
-    
-    if(LIBWEBSOCKETS_FOUND)
-        include_directories(${LIBWEBSOCKETS_INCLUDE_DIRS})
-        list(APPEND LIBS ${LIBWEBSOCKETS_LIBRARIES})
-    else()
-        # Try to find libwebsockets without pkg-config
-        find_path(LIBWEBSOCKETS_INCLUDE_DIR libwebsockets.h)
-        find_library(LIBWEBSOCKETS_LIBRARY websockets)
-        
-        if(LIBWEBSOCKETS_INCLUDE_DIR AND LIBWEBSOCKETS_LIBRARY)
-            include_directories(${LIBWEBSOCKETS_INCLUDE_DIR})
-            list(APPEND LIBS ${LIBWEBSOCKETS_LIBRARY})
-        else()
-            message(FATAL_ERROR "libwebsockets not found. Install libwebsockets or disable WebSocket support with -DENABLE_WEBSOCKET=OFF")
-        endif()
-    endif()
-endif()
-
 # Broker
 add_option(WOLFMQTT_BROKER
            "Enable lightweight broker support"
@@ -379,7 +350,6 @@ message("\tNon-Blocking:        ${ENABLE_NONBLOCK}")
 message("\tMQTT-SN:             ${ENABLE_MQTT_SN}")
 message("\tMQTT v5:             ${ENABLE_MQTT_V5}")
 message("\tTLS:                 ${ENABLE_TLS}")
-message("\tWebSocket:           ${ENABLE_WEBSOCKET}")
 message("\tExamples:            ${ENABLE_EXAMPLES}")
 message("\tFirmware Examples:   ${ENABLE_FIRMWARE_EXAMPLES}")
 message("\tMultithread:         ${ENABLE_MULTITHREAD}")

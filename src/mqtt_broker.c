@@ -29,6 +29,7 @@
 #include "wolfmqtt/mqtt_client.h"
 #include "wolfmqtt/mqtt_packet.h"
 #include "wolfmqtt/mqtt_socket.h"
+#include "wolfmqtt/logger.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -85,24 +86,28 @@
     #endif
 #endif
 
-/* Logging macros with level filtering.
- * Define WOLFMQTT_BROKER_NO_LOG to strip all broker log calls at compile time. */
-#ifdef WOLFMQTT_BROKER_NO_LOG
-    #define WBLOG_ERR(b, ...)   do { (void)(b); } while(0)
-    #define WBLOG_INFO(b, ...)  do { (void)(b); } while(0)
-    #define WBLOG_DBG(b, ...)   do { (void)(b); } while(0)
-#else
-    #define WBLOG(b, level, ...) \
-        do { if ((b)->log_level >= (level)) PRINTF(__VA_ARGS__); } while(0)
-    #define WBLOG_ERR(b, ...)   WBLOG(b, BROKER_LOG_ERROR, __VA_ARGS__)
-    #define WBLOG_INFO(b, ...)  WBLOG(b, BROKER_LOG_INFO, __VA_ARGS__)
-    #define WBLOG_DBG(b, ...)   WBLOG(b, BROKER_LOG_DEBUG, __VA_ARGS__)
-#endif
+/* Logging macros with level filtering and customizable callback. */
+#include <stdarg.h>
+
+static inline void broker_log(MqttBroker* b, LogLevel level, const char* format, ...) {
+    if (b->log_level >= level) {
+        va_list args;
+        va_start(args, format);
+        b->log(level, format, args);
+        va_end(args);
+    }
+}
+
+#define WBLOG_DBG(b, ...)   broker_log(b, LOG_LEVEL_DEBUG, __VA_ARGS__)
+#define WBLOG_INFO(b, ...)  broker_log(b, LOG_LEVEL_INFO, __VA_ARGS__)
+#define WBLOG_WARN(b, ...)  broker_log(b, LOG_LEVEL_WARN, __VA_ARGS__)
+#define WBLOG_ERR(b, ...)   broker_log(b, LOG_LEVEL_ERROR, __VA_ARGS__)
+#define WBLOG_FATAL(b, ...) broker_log(b, LOG_LEVEL_FATAL, __VA_ARGS__)
 
 /* Buffer size accessors - unify static/dynamic code paths */
 #ifdef WOLFMQTT_STATIC_MEMORY
-    #define BROKER_CLIENT_TX_SZ(bc) ((bc)->broker->options.tx_buf_sz)
-    #define BROKER_CLIENT_RX_SZ(bc) ((bc)->broker->options.rx_buf_sz)
+    #define BROKER_CLIENT_TX_SZ(bc) ((bc)->broker->tx_buf_sz)
+    #define BROKER_CLIENT_RX_SZ(bc) ((bc)->broker->rx_buf_sz)
 #else
     #define BROKER_CLIENT_TX_SZ(bc) ((bc)->tx_buf_len)
     #define BROKER_CLIENT_RX_SZ(bc) ((bc)->rx_buf_len)
@@ -995,7 +1000,7 @@ static BrokerClient* BrokerClient_AddWs(MqttBroker* broker, struct lws *wsi)
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_clients; i++) {
+        for (i = 0; i < broker->max_clients; i++) {
             if (!broker->clients[i].in_use) {
                 bc = &broker->clients[i];
                 break;
@@ -1016,8 +1021,8 @@ static BrokerClient* BrokerClient_AddWs(MqttBroker* broker, struct lws *wsi)
     }
     if (rc == MQTT_CODE_SUCCESS) {
         XMEMSET(bc, 0, sizeof(*bc));
-        bc->tx_buf_len = broker->options.tx_buf_sz;
-        bc->rx_buf_len = broker->options.rx_buf_sz;
+        bc->tx_buf_len = broker->tx_buf_sz;
+        bc->rx_buf_len = broker->rx_buf_sz;
         bc->tx_buf = (byte*)WOLFMQTT_MALLOC(bc->tx_buf_len);
         bc->rx_buf = (byte*)WOLFMQTT_MALLOC(bc->rx_buf_len);
         if (bc->tx_buf == NULL || bc->rx_buf == NULL) {
@@ -1061,7 +1066,7 @@ static BrokerClient* BrokerClient_AddWs(MqttBroker* broker, struct lws *wsi)
 
         rc = MqttClient_Init(&bc->client, &bc->net, NULL,
                 bc->tx_buf, BROKER_CLIENT_TX_SZ(bc),
-                bc->rx_buf, BROKER_CLIENT_RX_SZ(bc), broker->options.timeout_ms);
+                bc->rx_buf, BROKER_CLIENT_RX_SZ(bc), broker->timeout_ms);
         if (rc != MQTT_CODE_SUCCESS) {
             WBLOG_ERR(broker, "broker: ws client init failed rc=%d", rc);
         }
@@ -1548,7 +1553,7 @@ static BrokerClient* BrokerClient_Add(MqttBroker* broker,
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_clients; i++) {
+        for (i = 0; i < broker->max_clients; i++) {
             if (!broker->clients[i].in_use) {
                 bc = &broker->clients[i];
                 break;
@@ -1569,8 +1574,8 @@ static BrokerClient* BrokerClient_Add(MqttBroker* broker,
     }
     if (rc == MQTT_CODE_SUCCESS) {
         XMEMSET(bc, 0, sizeof(*bc));
-        bc->tx_buf_len = broker->options.tx_buf_sz;
-        bc->rx_buf_len = broker->options.rx_buf_sz;
+        bc->tx_buf_len = broker->tx_buf_sz;
+        bc->rx_buf_len = broker->rx_buf_sz;
         bc->tx_buf = (byte*)WOLFMQTT_MALLOC(bc->tx_buf_len);
         bc->rx_buf = (byte*)WOLFMQTT_MALLOC(bc->rx_buf_len);
         if (bc->tx_buf == NULL || bc->rx_buf == NULL) {
@@ -1604,7 +1609,7 @@ static BrokerClient* BrokerClient_Add(MqttBroker* broker,
 
         rc = MqttClient_Init(&bc->client, &bc->net, NULL,
                 bc->tx_buf, BROKER_CLIENT_TX_SZ(bc),
-                bc->rx_buf, BROKER_CLIENT_RX_SZ(bc), broker->options.timeout_ms);
+                bc->rx_buf, BROKER_CLIENT_RX_SZ(bc), broker->timeout_ms);
         if (rc != MQTT_CODE_SUCCESS) {
             WBLOG_ERR(broker, "broker: client init failed rc=%d", rc);
         }
@@ -1673,12 +1678,12 @@ static void BrokerClient_Remove(MqttBroker* broker, BrokerClient* bc, int reason
         }
 
         /* 更新连接统计 */
-        if (broker->stats_enabled && broker->stats.conns > 0) {
+        if (broker->enable_stats && broker->stats.conns > 0) {
             broker->stats.conns--;
         }
 #ifdef WOLFMQTT_STATIC_MEMORY
         int i;
-        for (i = 0; i < broker->options.max_clients; i++) {
+        for (i = 0; i < broker->max_clients; i++) {
             if (broker->clients[i].in_use && broker->clients[i].connected) {
                 count_before++;
             }
@@ -1730,7 +1735,7 @@ static void BrokerSubs_OrphanClient(MqttBroker* broker, BrokerClient* bc)
     WOLFMQTT_BROKER_TIME_T now = WOLFMQTT_BROKER_GET_TIME_S();
 #ifdef WOLFMQTT_STATIC_MEMORY
     int i;
-    for (i = 0; i < broker->options.max_subs; i++) {
+    for (i = 0; i < broker->max_subs; i++) {
         if (broker->subs[i].in_use && broker->subs[i].client == bc) {
             broker->subs[i].client = NULL;
 #ifdef WOLFMQTT_V5
@@ -1759,12 +1764,10 @@ static void BrokerSubs_OrphanClient(MqttBroker* broker, BrokerClient* bc)
     if (count > 0) {
         WBLOG_INFO(broker, "broker: orphaned %d subs for client_id=%s (session persist)",
             count, BROKER_STR_VALID(bc->client_id) ? bc->client_id : "(null)");
-#ifdef WOLFMQTT_BROKER_DEBUG
-        PRINTF("[BROKER-DEBUG] Orphaned subscriptions: client_id=%s count=%d session_expiry_interval=%u\n",
+WBLOG_DBG(broker, "Orphaned subscriptions: client_id=%s count=%d session_expiry_interval=%u",
             BROKER_STR_VALID(bc->client_id) ? bc->client_id : "(null)",
             count,
             (unsigned int)bc->session_expiry_interval);
-#endif
     }
 }
 
@@ -1783,7 +1786,7 @@ static int BrokerSubs_CheckSessionExpiry(MqttBroker* broker)
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_subs; i++) {
+        for (i = 0; i < broker->max_subs; i++) {
             BrokerSub* sub = &broker->subs[i];
             /* Check if this is an orphaned subscription (client == NULL) */
             if (sub->in_use && sub->client == NULL && sub->disconnect_time > 0) {
@@ -1791,16 +1794,13 @@ static int BrokerSubs_CheckSessionExpiry(MqttBroker* broker)
                 if (sub->session_expiry_interval > 0) {
                     WOLFMQTT_BROKER_TIME_T elapsed = now - sub->disconnect_time;
                     if (elapsed >= (WOLFMQTT_BROKER_TIME_T)sub->session_expiry_interval) {
-#ifdef WOLFMQTT_BROKER_DEBUG
-                        PRINTF("[BROKER-DEBUG] Session expired: client_id=%s filter=%s "
-                               "disconnect_time=%u now=%u interval=%u elapsed=%u\n",
+WBLOG_DBG(broker, "Session expired: client_id=%s filter=%s disconnect_time=%u now=%u interval=%u elapsed=%u",
                                BROKER_STR_VALID(sub->client_id) ? sub->client_id : "(null)",
                                sub->filter,
                                (unsigned int)sub->disconnect_time,
                                (unsigned int)now,
                                (unsigned int)sub->session_expiry_interval,
                                (unsigned int)elapsed);
-#endif
                         WBLOG_INFO(broker,
                             "broker: session expired client_id=%s filter=%s",
                             BROKER_STR_VALID(sub->client_id) ? sub->client_id : "(null)",
@@ -1835,16 +1835,13 @@ static int BrokerSubs_CheckSessionExpiry(MqttBroker* broker)
                 if (cur->session_expiry_interval > 0) {
                     WOLFMQTT_BROKER_TIME_T elapsed = now - cur->disconnect_time;
                     if (elapsed >= (WOLFMQTT_BROKER_TIME_T)cur->session_expiry_interval) {
-#ifdef WOLFMQTT_BROKER_DEBUG
-                        PRINTF("[BROKER-DEBUG] Session expired: client_id=%s filter=%s "
-                               "disconnect_time=%u now=%u interval=%u elapsed=%u\n",
+WBLOG_DBG(broker, "Session expired: client_id=%s filter=%s disconnect_time=%u now=%u interval=%u elapsed=%u",
                                BROKER_STR_VALID(cur->client_id) ? cur->client_id : "(null)",
                                cur->filter,
                                (unsigned int)cur->disconnect_time,
                                (unsigned int)now,
                                (unsigned int)cur->session_expiry_interval,
                                (unsigned int)elapsed);
-#endif
                         WBLOG_INFO(broker,
                             "broker: session expired client_id=%s filter=%s",
                             BROKER_STR_VALID(cur->client_id) ? cur->client_id : "(null)",
@@ -1908,7 +1905,7 @@ static void BrokerSubs_RemoveClient(MqttBroker* broker, BrokerClient* bc)
 {
 #ifdef WOLFMQTT_STATIC_MEMORY
     int i;
-    for (i = 0; i < broker->options.max_subs; i++) {
+    for (i = 0; i < broker->max_subs; i++) {
         if (broker->subs[i].in_use && broker->subs[i].client == bc) {
             XMEMSET(&broker->subs[i], 0, sizeof(BrokerSub));
         }
@@ -1992,7 +1989,7 @@ static int BrokerSubs_Add(MqttBroker* broker, BrokerClient* bc,
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_subs; i++) {
+        for (i = 0; i < broker->max_subs; i++) {
             if (broker->subs[i].in_use && broker->subs[i].client == bc &&
                 (word16)XSTRLEN(broker->subs[i].filter) == actual_flen &&
                 XMEMCMP(broker->subs[i].filter, actual_filter, actual_flen) == 0) {
@@ -2064,7 +2061,7 @@ static int BrokerSubs_Add(MqttBroker* broker, BrokerClient* bc,
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_subs; i++) {
+        for (i = 0; i < broker->max_subs; i++) {
             if (!broker->subs[i].in_use) {
                 sub = &broker->subs[i];
                 break;
@@ -2191,7 +2188,7 @@ static int BrokerSubs_Add(MqttBroker* broker, BrokerClient* bc,
 #endif
                 , rh);
             /* 新增订阅，更新统计 */
-            if (broker->stats_enabled) {
+            if (broker->enable_stats) {
                 broker->stats.subs++;
             }
         }
@@ -2228,7 +2225,7 @@ static void BrokerSubs_Remove(MqttBroker* broker, BrokerClient* bc,
 
 #ifdef WOLFMQTT_STATIC_MEMORY
     int i;
-    for (i = 0; i < broker->options.max_subs; i++) {
+    for (i = 0; i < broker->max_subs; i++) {
         BrokerSub* s = &broker->subs[i];
         if (s->in_use && s->client == bc &&
             s->filter[0] != '\0' &&
@@ -2247,7 +2244,7 @@ static void BrokerSubs_Remove(MqttBroker* broker, BrokerClient* bc,
                 (int)bc->sock, s->filter);
             XMEMSET(s, 0, sizeof(BrokerSub));
             /* 删除订阅，更新统计 */
-            if (broker->stats_enabled && broker->stats.subs > 0) {
+            if (broker->enable_stats && broker->stats.subs > 0) {
                 broker->stats.subs--;
             }
             return;
@@ -2297,7 +2294,7 @@ static void BrokerSubs_Remove(MqttBroker* broker, BrokerClient* bc,
             }
             WOLFMQTT_FREE(cur);
             /* 删除订阅，更新统计 */
-            if (broker->stats_enabled && broker->stats.subs > 0) {
+            if (broker->enable_stats && broker->stats.subs > 0) {
                 broker->stats.subs--;
             }
             return;
@@ -2333,7 +2330,7 @@ static BrokerClient* BrokerClient_FindByClientId(MqttBroker* broker,
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_clients; i++) {
+        for (i = 0; i < broker->max_clients; i++) {
             BrokerClient* bc = &broker->clients[i];
             if (!bc->in_use) continue;
             if (bc != exclude && BROKER_STR_VALID(bc->client_id) &&
@@ -2369,7 +2366,7 @@ static void BrokerSubs_RemoveByClientId(MqttBroker* broker,
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_subs; i++) {
+        for (i = 0; i < broker->max_subs; i++) {
             BrokerSub* s = &broker->subs[i];
             if (!s->in_use) continue;
             /* Check active client subs */
@@ -2439,7 +2436,7 @@ static void BrokerSubs_ReassociateClient(MqttBroker* broker,
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_subs; i++) {
+        for (i = 0; i < broker->max_subs; i++) {
             BrokerSub* s = &broker->subs[i];
             if (!s->in_use) continue;
             /* Check orphaned subs (client=NULL, client_id stored in sub) */
@@ -2500,7 +2497,7 @@ static int BrokerRetained_Store(MqttBroker* broker, const char* topic,
     {
         int i;
         /* Look for existing retained msg on this topic */
-        for (i = 0; i < broker->options.max_retained; i++) {
+        for (i = 0; i < broker->max_retained; i++) {
             if (broker->retained[i].in_use &&
                 XSTRCMP(broker->retained[i].topic, topic) == 0) {
                 msg = &broker->retained[i];
@@ -2509,7 +2506,7 @@ static int BrokerRetained_Store(MqttBroker* broker, const char* topic,
         }
         /* If not found, find a free slot */
         if (msg == NULL) {
-            for (i = 0; i < broker->options.max_retained; i++) {
+            for (i = 0; i < broker->max_retained; i++) {
                 if (!broker->retained[i].in_use) {
                     msg = &broker->retained[i];
                     break;
@@ -2596,7 +2593,7 @@ static int BrokerRetained_Store(MqttBroker* broker, const char* topic,
                 msg->next = broker->retained;
                 broker->retained = msg;
                 /* 新增保留消息，更新统计 */
-                if (broker->stats_enabled) {
+                if (broker->enable_stats) {
                     broker->stats.retained++;
                 }
             }
@@ -2628,13 +2625,13 @@ static void BrokerRetained_Delete(MqttBroker* broker, const char* topic)
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_retained; i++) {
+        for (i = 0; i < broker->max_retained; i++) {
             if (broker->retained[i].in_use &&
                 XSTRCMP(broker->retained[i].topic, topic) == 0) {
                 WBLOG_DBG(broker, "broker: retained delete topic=%s", topic);
                 XMEMSET(&broker->retained[i], 0, sizeof(BrokerRetainedMsg));
                 /* 删除保留消息，更新统计 */
-                if (broker->stats_enabled && broker->stats.retained > 0) {
+                if (broker->enable_stats && broker->stats.retained > 0) {
                     broker->stats.retained--;
                 }
                 return;
@@ -2661,7 +2658,7 @@ static void BrokerRetained_Delete(MqttBroker* broker, const char* topic)
                 }
                 WOLFMQTT_FREE(cur);
                 /* 删除保留消息，更新统计 */
-                if (broker->stats_enabled && broker->stats.retained > 0) {
+                if (broker->enable_stats && broker->stats.retained > 0) {
                     broker->stats.retained--;
                 }
                 return;
@@ -2678,7 +2675,7 @@ static void BrokerRetained_FreeAll(MqttBroker* broker)
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_retained; i++) {
+        for (i = 0; i < broker->max_retained; i++) {
             XMEMSET(&broker->retained[i], 0, sizeof(BrokerRetainedMsg));
         }
     }
@@ -2757,7 +2754,7 @@ static int BrokerPendingWill_Add(MqttBroker* broker, BrokerClient* bc)
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_pending_wills; i++) {
+        for (i = 0; i < broker->max_pending_wills; i++) {
             if (!broker->pending_wills[i].in_use) {
                 pw = &broker->pending_wills[i];
                 break;
@@ -2869,7 +2866,7 @@ static void BrokerPendingWill_Cancel(MqttBroker* broker,
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_pending_wills; i++) {
+        for (i = 0; i < broker->max_pending_wills; i++) {
             if (broker->pending_wills[i].in_use &&
                 XSTRCMP(broker->pending_wills[i].client_id, client_id) == 0) {
                 WBLOG_DBG(broker, "broker: will cancelled client_id=%s", client_id);
@@ -2963,7 +2960,7 @@ static int BrokerPendingWill_Process(MqttBroker* broker)
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_pending_wills; i++) {
+        for (i = 0; i < broker->max_pending_wills; i++) {
             BrokerPendingWill* pw = &broker->pending_wills[i];
             if (!pw->in_use) {
                 continue;
@@ -3048,7 +3045,7 @@ static void BrokerRetained_DeliverToClient(MqttBroker* broker,
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_retained; i++) {
+        for (i = 0; i < broker->max_retained; i++) {
             BrokerRetainedMsg* rm = &broker->retained[i];
             if (!rm->in_use || rm->topic[0] == '\0') {
                 continue;
@@ -3240,7 +3237,7 @@ static void BrokerClient_PublishWillImmediate(MqttBroker* broker,
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_subs; i++) {
+        for (i = 0; i < broker->max_subs; i++) {
             BrokerSub* sub = &broker->subs[i];
             if (!sub->in_use) continue;
 #else
@@ -3467,7 +3464,7 @@ static MqttProp* BrokerProps_Find(MqttProp* head, MqttPropertyType type)
     }
     if (count >= 200) {
         /* Property list is corrupted (circular or too long) */
-        PRINTF("[BROKER-ERROR] Property list corrupted - circular or too many properties\n");
+        WBLOG_ERR(broker, "Property list corrupted - circular or too many properties");
     }
     return NULL;
 }
@@ -3587,16 +3584,14 @@ static int BrokerHandle_Connect(BrokerClient* bc, int rx_len,
             MQTT_PROP_SESSION_EXPIRY_INTERVAL);
         if (prop != NULL) {
             bc->session_expiry_interval = prop->data_int;
-        #ifdef WOLFMQTT_BROKER_DEBUG
-            PRINTF("[BROKER-DEBUG] CONNECT: client_id=%s session_expiry_interval=%u seconds (from property)\n",
+        WBLOG_DBG(broker, "CONNECT: client_id=%s session_expiry_interval=%u seconds (from property)",
                 BROKER_STR_VALID(bc->client_id) ? bc->client_id : "(null)",
                 (unsigned int)bc->session_expiry_interval);
-        #endif
         }
     }
     /* If no Session Expiry Interval property and clean session=0, use broker default */
     if (bc->session_expiry_interval == 0 && !mc.clean_session) {
-        bc->session_expiry_interval = broker->options.default_session_expiry_interval;
+        bc->session_expiry_interval = broker->default_session_expiry_interval;
         WBLOG_INFO(broker, "broker: CONNECT client_id=%s using default_session_expiry_interval=%u seconds",
             BROKER_STR_VALID(bc->client_id) ? bc->client_id : "(null)",
             (unsigned int)bc->session_expiry_interval);
@@ -3606,7 +3601,7 @@ static int BrokerHandle_Connect(BrokerClient* bc, int rx_len,
     bc->session_expiry_interval = 0;
     if (!mc.clean_session) {
         /* Use broker default session expiry interval for persistent sessions */
-        bc->session_expiry_interval = broker->options.default_session_expiry_interval;
+        bc->session_expiry_interval = broker->default_session_expiry_interval;
         WBLOG_INFO(broker, "broker: CONNECT client_id=%s (MQTT 3.1.1) clean=0, using default_session_expiry_interval=%u seconds",
             BROKER_STR_VALID(bc->client_id) ? bc->client_id : "(null)",
             (unsigned int)bc->session_expiry_interval);
@@ -3618,11 +3613,9 @@ static int BrokerHandle_Connect(BrokerClient* bc, int rx_len,
         MqttProp* prop = BrokerProps_Find(mc.props, MQTT_PROP_TOPIC_ALIAS_MAX);
         if (prop != NULL) {
             bc->topic_alias_maximum = prop->data_short;
-        #ifdef WOLFMQTT_BROKER_DEBUG
-            PRINTF("[BROKER-DEBUG] CONNECT: client_id=%s topic_alias_maximum=%u\n",
+        WBLOG_DBG(broker, "CONNECT: client_id=%s topic_alias_maximum=%u",
                 BROKER_STR_VALID(bc->client_id) ? bc->client_id : "(null)",
                 (unsigned int)bc->topic_alias_maximum);
-        #endif
         }
 
         /* Extract Receive Maximum from CONNECT properties (v5) */
@@ -3939,50 +3932,50 @@ static int BrokerHandle_Connect(BrokerClient* bc, int rx_len,
             }
         }
 
-        /* Advertise feature availability (from BrokerOptions) */
+        /* Advertise feature availability (always enabled) */
         prop = MqttProps_Add(&ack.props);
         if (prop != NULL) {
             prop->type = MQTT_PROP_RETAIN_AVAIL;
-            prop->data_byte = broker->options.retain_avail;
+            prop->data_byte = 1; /* retain always available */
         }
 
         prop = MqttProps_Add(&ack.props);
         if (prop != NULL) {
             prop->type = MQTT_PROP_WILDCARD_SUB_AVAIL;
-            prop->data_byte = broker->options.wildcard_sub_avail;
+            prop->data_byte = 1; /* wildcard subscriptions always available */
         }
 
         prop = MqttProps_Add(&ack.props);
         if (prop != NULL) {
             prop->type = MQTT_PROP_SUBSCRIPTION_ID_AVAIL;
-            prop->data_byte = broker->options.sub_id_avail;
+            prop->data_byte = 1; /* subscription IDs always available */
         }
 
         prop = MqttProps_Add(&ack.props);
         if (prop != NULL) {
             prop->type = MQTT_PROP_SHARED_SUBSCRIPTION_AVAIL;
-            prop->data_byte = broker->options.shared_sub_avail;
+            prop->data_byte = 1; /* shared subscriptions always available */
         }
 
         prop = MqttProps_Add(&ack.props);
         if (prop != NULL) {
             prop->type = MQTT_PROP_MAX_QOS;
-            prop->data_byte = broker->options.max_qos;
+            prop->data_byte = 2; /* QoS 0, 1, 2 always supported */
         }
 
         /* Advertise Topic Alias Maximum (from BrokerOptions) */
         prop = MqttProps_Add(&ack.props);
         if (prop != NULL) {
             prop->type = MQTT_PROP_TOPIC_ALIAS_MAX;
-            prop->data_short = broker->options.topic_alias_max;
+            prop->data_short = broker->topic_alias_max;
         }
 
         /* Advertise Maximum Packet Size (from BrokerOptions if non-zero) */
-        if (broker->options.max_packet_size > 0) {
+        if (broker->max_packet_size > 0) {
             prop = MqttProps_Add(&ack.props);
             if (prop != NULL) {
                 prop->type = MQTT_PROP_MAX_PACKET_SZ;
-                prop->data_int = broker->options.max_packet_size;
+                prop->data_int = broker->max_packet_size;
             }
         }
     }
@@ -4064,13 +4057,11 @@ static int BrokerHandle_Subscribe(BrokerClient* bc, int rx_len,
 
         if (f && MqttDecode_Num((byte*)f - MQTT_DATA_LEN_SIZE,
                 &flen, MQTT_DATA_LEN_SIZE) == MQTT_DATA_LEN_SIZE) {
-#ifdef WOLFMQTT_BROKER_DEBUG
-            /* Debug: Print subscription details */
-            PRINTF("[BROKER-DEBUG] SUBSCRIBE: client=%s ip=%s topic=%.*s qos=%d nl=%d rap=%d rh=%d",
+/* Debug: Print subscription details */
+            WBLOG_DBG(broker, "SUBSCRIBE: client=%s ip=%s topic=%.*s qos=%d nl=%d rap=%d rh=%d",
                 BROKER_STR_VALID(bc->client_id) ? bc->client_id : "(unknown)",
                 bc->client_ip,
                 (int)flen, f, topic_qos, no_local, rap, retain_handling);
-#endif
             int sub_rc = BrokerSubs_Add(broker, bc, f, flen, topic_qos
 #ifdef WOLFMQTT_V5
                 , no_local, rap, retain_handling
@@ -4080,9 +4071,7 @@ static int BrokerHandle_Subscribe(BrokerClient* bc, int rx_len,
 
             if (sub_rc != MQTT_CODE_SUCCESS && sub_rc != MQTT_CODE_CONTINUE) {
                 granted_qos = (MqttQoS)MQTT_SUBSCRIBE_ACK_CODE_FAILURE;
-#ifdef WOLFMQTT_BROKER_DEBUG
-                PRINTF("[BROKER-DEBUG] SUBSCRIBE: FAILED (rc=%d)", sub_rc);
-#endif
+WBLOG_DBG(broker, "SUBSCRIBE: FAILED (rc=%d)", sub_rc);
             }
 #ifdef WOLFMQTT_BROKER_RETAINED
             else if (retain_handling != 2) {
@@ -4098,9 +4087,7 @@ static int BrokerHandle_Subscribe(BrokerClient* bc, int rx_len,
 
                 /* For retain_handling=2, only send on new subscriptions, not updates */
                 if (retain_handling == 2 && !is_new_sub) {
-#ifdef WOLFMQTT_BROKER_DEBUG
-                    PRINTF("[BROKER-DEBUG] SUBSCRIBE: Skip retained (existing sub, rh=2)");
-#endif
+WBLOG_DBG(broker, "SUBSCRIBE: Skip retained (existing sub, rh=2)");
                 } else {
                     BrokerRetained_DeliverToClient(broker, bc, filter_z,
                         topic_qos
@@ -4110,11 +4097,9 @@ static int BrokerHandle_Subscribe(BrokerClient* bc, int rx_len,
                         );
                 }
             }
-#ifdef WOLFMQTT_BROKER_DEBUG
-            else {
-                PRINTF("[BROKER-DEBUG] SUBSCRIBE: Skip retained (rh=2)");
+else {
+                WBLOG_DBG(broker, "SUBSCRIBE: Skip retained (rh=2)");
             }
-#endif
 #endif
         }
         return_codes[i] = (byte)granted_qos;
@@ -4254,7 +4239,7 @@ static int BrokerHandle_Publish(BrokerClient* bc, int rx_len,
     }
 
     /* 更新接收消息统计 */
-    if (broker->stats_enabled) {
+    if (broker->enable_stats) {
         broker->stats.rx_msgs++;
         broker->stats.rx_bytes += rx_len;
     }
@@ -4456,7 +4441,7 @@ static int BrokerHandle_Publish(BrokerClient* bc, int rx_len,
 #ifdef WOLFMQTT_STATIC_MEMORY
         {
             int i;
-            for (i = 0; i < broker->options.max_subs; i++) {
+            for (i = 0; i < broker->max_subs; i++) {
                 BrokerSub* sub = &broker->subs[i];
                 if (!sub->in_use) continue;
 #else
@@ -4498,7 +4483,7 @@ static int BrokerHandle_Publish(BrokerClient* bc, int rx_len,
 
                         /* 遍历该组的所有订阅者，找到 rr_index 最小的 */
 #ifdef WOLFMQTT_STATIC_MEMORY
-                        for (int j = i + 1; j < broker->options.max_subs; j++) {
+                        for (int j = i + 1; j < broker->max_subs; j++) {
                             BrokerSub* other = &broker->subs[j];
                             if (other->in_use && other->client != NULL &&
                                 other->is_shared && other->share_group != NULL &&
@@ -4641,7 +4626,7 @@ static int BrokerHandle_Publish(BrokerClient* bc, int rx_len,
                         (void)MqttPacket_Write(&sub->client->client,
                             sub->client->tx_buf, rc);
                         /* 更新发送消息统计 */
-                        if (broker->stats_enabled) {
+                        if (broker->enable_stats) {
                             broker->stats.tx_msgs++;
                             broker->stats.tx_bytes += rc;
                         }
@@ -4790,8 +4775,8 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
     /* Complete TLS handshake before processing MQTT packets */
     if (!bc->tls_handshake_done) {
         int ret;
-        bc->client.tls.timeout_ms_read = broker->options.timeout_ms;
-        bc->client.tls.timeout_ms_write = broker->options.timeout_ms;
+        bc->client.tls.timeout_ms_read = broker->timeout_ms;
+        bc->client.tls.timeout_ms_write = broker->timeout_ms;
         ret = wolfSSL_accept(bc->client.tls.ssl);
         if (ret == WOLFSSL_SUCCESS) {
             bc->tls_handshake_done = 1;
@@ -4892,7 +4877,7 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
                 }
                 bc->connected = 1;
                 /* 更新连接统计 */
-                if (broker->stats_enabled) {
+                if (broker->enable_stats) {
                     broker->stats.conns++;
                 }
                 /* 触发 on_connect 回调 */
@@ -4906,7 +4891,7 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
                     int count = 0;
 #ifdef WOLFMQTT_STATIC_MEMORY
                     int i;
-                    for (i = 0; i < broker->options.max_clients; i++) {
+                    for (i = 0; i < broker->max_clients; i++) {
                         if (broker->clients[i].in_use && broker->clients[i].connected) {
                             count++;
                         }
@@ -5144,19 +5129,48 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
     broker->port_tls = MQTT_SECURE_PORT;
 #endif
     broker->running = 0;
-    broker->log_level = BROKER_LOG_LEVEL_DEFAULT;
+    broker->log_level = LOG_LEVEL_WARN; /* Default to WARN level */
+    broker->log = Log_DefaultCallback;  /* Set default log callback */
     broker->next_packet_id = 1;
 
-    /* 初始化broker选项为默认值 */
-    broker->options = (BrokerOptions){
-        BROKER_OPTIONS_DEFAULTS
-    };
+    /* 初始化缓冲区大小默认值 */
+    broker->rx_buf_sz = BROKER_RX_BUF_SZ;
+    broker->tx_buf_sz = BROKER_TX_BUF_SZ;
+    broker->timeout_ms = BROKER_TIMEOUT_MS;
+    broker->listen_backlog = BROKER_LISTEN_BACKLOG;
+
+    /* 初始化容量限制默认值 */
+    broker->max_clients = BROKER_MAX_CLIENTS;
+    broker->max_subs = BROKER_MAX_SUBS;
+    broker->max_retained = BROKER_MAX_RETAINED;
+    broker->max_pending_wills = BROKER_MAX_PENDING_WILLS;
+
+    /* 初始化字符串长度限制默认值 */
+    broker->max_client_id_len = BROKER_MAX_CLIENT_ID_LEN;
+    broker->max_username_len = BROKER_MAX_USERNAME_LEN;
+    broker->max_password_len = BROKER_MAX_PASSWORD_LEN;
+    broker->max_filter_len = BROKER_MAX_FILTER_LEN;
+    broker->max_topic_len = BROKER_MAX_TOPIC_LEN;
+    broker->max_payload_len = BROKER_MAX_PAYLOAD_LEN;
+    broker->max_will_payload_len = BROKER_MAX_WILL_PAYLOAD_LEN;
+
+#ifdef WOLFMQTT_V5
+    /* MQTT 5 默认值 */
+    broker->max_packet_size = 0; /* no limit */
+    broker->topic_alias_max = BROKER_MAX_TOPIC_ALIASES;
+#endif
+
+    /* 会话持久化默认值 */
+    broker->default_session_expiry_interval = 180; /* 3 minutes */
+
+    /* 统计设置 */
+    broker->stats_interval = 20; /* 20 seconds */
+    broker->enable_stats = 1;
 
     /* 初始化统计数据 */
-    broker->stats_enabled = 1;
     broker->stats.start = WOLFMQTT_BROKER_GET_TIME_S();
     /* 设置 last_stats_time 为启动时间减去间隔，确保第一次立即发送 */
-    broker->last_stats_time = broker->stats.start - broker->options.stats_interval;
+    broker->last_stats_time = broker->stats.start - broker->stats_interval;
 
 #if !defined(WOLFMQTT_WOLFIP) && !defined(WOLFMQTT_BROKER_CUSTOM_NET)
     /* For the default POSIX backend, the net callbacks expect ctx to be a
@@ -5167,41 +5181,6 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
     }
 #endif
 
-    return MQTT_CODE_SUCCESS;
-}
-
-/* 获取broker运行时配置选项 */
-int MqttBroker_GetOptions(MqttBroker* broker, BrokerOptions* options)
-{
-    if (broker == NULL || options == NULL) {
-        return MQTT_CODE_ERROR_BAD_ARG;
-    }
-    
-    XMEMCPY(options, &broker->options, sizeof(BrokerOptions));
-    return MQTT_CODE_SUCCESS;
-}
-
-/* 设置broker运行时配置选项（必须在broker启动前调用） */
-int MqttBroker_SetOptions(MqttBroker* broker, const BrokerOptions* options)
-{
-    if (broker == NULL || options == NULL) {
-        return MQTT_CODE_ERROR_BAD_ARG;
-    }
-    
-    /* 不允许在broker运行时修改选项 */
-    if (broker->running) {
-        return MQTT_CODE_ERROR_BAD_ARG;
-    }
-    
-    /* 验证选项范围 */
-    if (options->rx_buf_sz == 0 || options->tx_buf_sz == 0) {
-        return MQTT_CODE_ERROR_BAD_ARG;
-    }
-    if (options->max_clients == 0 || options->max_subs == 0) {
-        return MQTT_CODE_ERROR_BAD_ARG;
-    }
-    
-    XMEMCPY(&broker->options, options, sizeof(BrokerOptions));
     return MQTT_CODE_SUCCESS;
 }
 
@@ -5307,7 +5286,7 @@ static int BrokerCommand_DisconnectAll(MqttBroker* broker)
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_clients; i++) {
+        for (i = 0; i < broker->max_clients; i++) {
             BrokerClient* bc = &broker->clients[i];
             if (!bc->in_use) continue;
 
@@ -5641,13 +5620,13 @@ static int MqttBroker_PublishStats(MqttBroker* broker)
     }
 
     /* 检查是否启用统计发送 */
-    if (broker->options.stats_interval == 0) {
+    if (broker->stats_interval == 0) {
         return MQTT_CODE_SUCCESS;  /* 禁用，直接返回 */
     }
 
     /* 检查是否到达发送时间 */
     now = WOLFMQTT_BROKER_GET_TIME_S();
-    if (now < broker->last_stats_time + broker->options.stats_interval) {
+    if (now < broker->last_stats_time + broker->stats_interval) {
         return MQTT_CODE_SUCCESS;  /* 未到时间 */
     }
 
@@ -5690,7 +5669,7 @@ static int MqttBroker_PublishStats(MqttBroker* broker)
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_subs; i++) {
+        for (i = 0; i < broker->max_subs; i++) {
             BrokerSub* sub = &broker->subs[i];
             if (!sub->in_use) continue;
 #else
@@ -5744,10 +5723,7 @@ static int MqttBroker_PublishStats(MqttBroker* broker)
 #endif
         }
     }
-
-    WBLOG_INFO(broker, "broker: stats published to %d subscribers: %s",
-        subscribers_notified, json_buf);
-
+ 
     return MQTT_CODE_SUCCESS;
 }
 
@@ -5842,7 +5818,7 @@ int MqttBroker_Step(MqttBroker* broker)
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_clients; i++) {
+        for (i = 0; i < broker->max_clients; i++) {
             BrokerClient* bc = &broker->clients[i];
             if (!bc->in_use) {
                 continue;
@@ -6109,7 +6085,7 @@ int MqttBroker_Free(MqttBroker* broker)
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
         int i;
-        for (i = 0; i < broker->options.max_clients; i++) {
+        for (i = 0; i < broker->max_clients; i++) {
             if (broker->clients[i].in_use) {
                 BrokerSubs_RemoveClient(broker, &broker->clients[i]);
                 BrokerClient_Free(&broker->clients[i]);
@@ -6182,7 +6158,7 @@ int MqttBroker_Free(MqttBroker* broker)
 static void BrokerUsage(const char* prog)
 {
     (void)prog; /* Suppress unused parameter warning */
-    PRINTF("usage: %s [-p port] [-v level]"
+    PRINTF("usage: %s [-p port] [-l level]"
 #ifdef WOLFMQTT_BROKER_AUTH
            " [-u user] [-P pass]"
 #endif
@@ -6194,7 +6170,7 @@ static void BrokerUsage(const char* prog)
 #endif
            , prog);
     PRINTF("  -p <port>   Plain port (default: %d)", MQTT_DEFAULT_PORT);
-    PRINTF("  -v <level>  Log level: 1=error, 2=info (default), 3=debug");
+    PRINTF("  -l <level>  Log level: 0=debug, 1=info, 2=warn (default), 3=error, 4=fatal");
 #ifdef ENABLE_MQTT_TLS
     PRINTF("  -t          Enable TLS support");
     PRINTF("  -s <port>   TLS port (default: %d)", MQTT_SECURE_PORT);
@@ -6276,7 +6252,8 @@ int wolfmqtt_broker(int argc, char** argv)
         if (XSTRCMP(argv[i], "-p") == 0 && i + 1 < argc) {
             broker.port = (word16)XATOI(argv[++i]);
         }
-        else if (XSTRCMP(argv[i], "-v") == 0 && i + 1 < argc) {
+        else if (XSTRCMP(argv[i], "-l") == 0 && i + 1 < argc) {
+            /* Log level: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=FATAL */
             broker.log_level = (byte)XATOI(argv[++i]);
         }
 #ifdef WOLFMQTT_BROKER_AUTH

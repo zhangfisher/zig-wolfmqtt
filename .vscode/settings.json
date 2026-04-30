@@ -4,7 +4,8 @@
     "zig.zls.enableArgumentPlaceholders": true,
     "zig.zls.trace.server": "verbose",
     "files.associations": {
-        "*.zig": "zig"
+        "*.zig": "zig",
+        "mqtt_broker.h": "c"
     },
     "editor.formatOnSave": true,
     "editor.defaultFormatter": "ziglang.vscode-zig",
