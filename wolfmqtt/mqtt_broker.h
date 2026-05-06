@@ -429,8 +429,8 @@ typedef struct MqttBroker {
     byte    log_level;         /* 日志级别 */
     MqttBrokerLogCb log;       /* 日志回调函数 (NULL则使用默认输出) */
 #ifdef WOLFMQTT_BROKER_AUTH
-    const char* auth_user;
-    const char* auth_pass;
+    const char* username;  /* Authentication username (NULL = no auth) */
+    const char* password;  /* Authentication password (NULL = no auth) */
 #endif
     MqttBrokerNet net;
     word16  next_packet_id;
