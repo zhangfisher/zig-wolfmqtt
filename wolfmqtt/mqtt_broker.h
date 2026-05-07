@@ -25,6 +25,7 @@
 #include "wolfmqtt/mqtt_types.h"
 #include "wolfmqtt/mqtt_socket.h"
 #include "wolfmqtt/mqtt_client.h"
+#include "wolfmqtt/mqtt_broker_transport.h"
 
 #ifdef __cplusplus
     extern "C" {
@@ -221,6 +222,10 @@ typedef struct BrokerCommandResponse {
 /* -------------------------------------------------------------------------- */
 typedef struct MqttBroker MqttBroker;
 
+#ifdef ENABLE_MQTT_WEBSOCKET
+typedef struct MqttWebSocketContext MqttWebSocketContext;
+#endif
+
 /* -------------------------------------------------------------------------- */
 /* Broker client lifecycle callbacks (客户端生命周期回调)                      */
 /* -------------------------------------------------------------------------- */
@@ -336,8 +341,15 @@ typedef struct BrokerClient {
     MqttNet net;
     MqttClient client;
     struct MqttBroker* broker;  /* back-pointer to parent broker context */
+    
+    /* Unified transport layer */
+    struct BrokerTransport transport;
+    
 #ifdef ENABLE_MQTT_TLS
     byte    tls_handshake_done;
+#endif
+#ifdef ENABLE_MQTT_WEBSOCKET
+    byte    is_websocket;    /* 是否为 WebSocket 连接 (for backward compatibility) */
 #endif
 } BrokerClient;
 
@@ -477,6 +489,11 @@ typedef struct MqttBroker {
     byte         tls_version;  /* 0=auto (v23), 12=TLS 1.2, 13=TLS 1.3 */
     byte         tls_ctx_owned; /* 1 if BrokerTls_Init created tls_ctx */
 #endif
+#ifdef ENABLE_MQTT_WEBSOCKET
+    BROKER_SOCKET_T listen_sock_ws; /* WebSocket 监听套接字 */
+    word16          port_ws;        /* WebSocket 端口 (默认 8080) */
+    byte            use_ws;         /* 是否启用 WebSocket */
+#endif
 #ifdef WOLFMQTT_STATIC_MEMORY
     BrokerClient clients[BROKER_MAX_CLIENTS];
     BrokerSub    subs[BROKER_MAX_SUBS];
@@ -536,6 +553,11 @@ WOLFMQTT_API int MqttBroker_Free(MqttBroker* broker);
 /* Start the broker (listen + TLS init). Call once before MqttBroker_Step().
  * For embedded systems that use a cooperative main loop with Step(). */
 WOLFMQTT_API int MqttBroker_Start(MqttBroker* broker);
+
+#ifdef ENABLE_MQTT_WEBSOCKET
+/* Start WebSocket listener on specified port */
+WOLFMQTT_API int MqttBroker_StartWebSocket(MqttBroker* broker, word16 port);
+#endif
 
 /* wolfIP backend initializer.
  * wolfIP_stack is a (struct wolfIP*) pointer to the wolfIP stack instance. */

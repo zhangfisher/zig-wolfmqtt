@@ -26,6 +26,7 @@
 
 #include "wolfmqtt/mqtt_types.h"
 #include "wolfmqtt/mqtt_broker.h"
+#include "wolfmqtt/mqtt_broker_transport.h"
 #include "wolfmqtt/mqtt_client.h"
 #include "wolfmqtt/mqtt_packet.h"
 #include "wolfmqtt/mqtt_socket.h"
@@ -52,6 +53,10 @@
     #include <sys/socket.h>
     #include <time.h>
     #include <unistd.h>
+#endif
+
+#ifdef ENABLE_MQTT_WEBSOCKET
+    #include "wolfmqtt/mqtt_websocket.h"
 #endif
 
 /* -------------------------------------------------------------------------- */
@@ -1058,462 +1063,9 @@ int MqttBrokerNet_Init(MqttBrokerNet* net)
 #endif /* WOLFMQTT_WOLFIP / !WOLFMQTT_BROKER_CUSTOM_NET */
 
 /* -------------------------------------------------------------------------- */
-/* WebSocket server support (libwebsockets)                                    */
+/* Per-client MqttNet callbacks (route through MqttBrokerNet)                  */
 /* -------------------------------------------------------------------------- */
-#ifdef ENABLE_MQTT_WEBSOCKET
 
-#include <libwebsockets.h>
-
-/* Compatibility for older libwebsockets versions (pre-4.1) */
-#ifndef LWS_PROTOCOL_LIST_TERM
-    #define LWS_PROTOCOL_LIST_TERM { NULL, NULL, 0, 0, 0, NULL, 0 }
-#endif
-
-/* Forward declaration for the no-op connect callback (defined after WS section) */
-static int BrokerNetConnect(void* context, const char* host, word16 port,
-    int timeout_ms);
-
-/* Forward declarations for WS-specific MqttNet callbacks */
-static int BrokerWsNetRead(void* context, byte* buf, int buf_len,
-    int timeout_ms);
-static int BrokerWsNetWrite(void* context, const byte* buf, int buf_len,
-    int timeout_ms);
-static int BrokerWsNetDisconnect(void* context);
-
-/* Forward declarations for client management used by lws callback */
-static void BrokerSubs_RemoveClient(MqttBroker* broker, BrokerClient* bc);
-static void BrokerClient_Remove(MqttBroker* broker, BrokerClient* bc, int reason);
-#ifdef WOLFMQTT_V5
-static int BrokerSubs_CheckSessionExpiry(MqttBroker* broker);
-#endif
-
-#ifdef WOLFMQTT_BROKER_WILL
-static void BrokerClient_PublishWill(MqttBroker* broker, BrokerClient* bc);
-#endif
-
-static BrokerClient* BrokerClient_AddWs(MqttBroker* broker, struct lws *wsi)
-{
-    BrokerClient* bc = NULL;
-    int rc = MQTT_CODE_SUCCESS;
-    BrokerWsCtx* ws;
-
-#ifdef WOLFMQTT_STATIC_MEMORY
-    {
-        int i;
-        for (i = 0; i < broker->max_clients; i++) {
-            if (!broker->clients[i].in_use) {
-                bc = &broker->clients[i];
-                break;
-            }
-        }
-        if (bc == NULL) {
-            rc = MQTT_CODE_ERROR_MEMORY;
-        }
-        if (rc == MQTT_CODE_SUCCESS) {
-            XMEMSET(bc, 0, sizeof(*bc));
-            bc->in_use = 1;
-        }
-    }
-#else
-    bc = (BrokerClient*)WOLFMQTT_MALLOC(sizeof(BrokerClient));
-    if (bc == NULL) {
-        rc = MQTT_CODE_ERROR_MEMORY;
-    }
-    if (rc == MQTT_CODE_SUCCESS) {
-        XMEMSET(bc, 0, sizeof(*bc));
-        bc->tx_buf_len = broker->tx_buf_sz;
-        bc->rx_buf_len = broker->rx_buf_sz;
-        bc->tx_buf = (byte*)WOLFMQTT_MALLOC(bc->tx_buf_len);
-        bc->rx_buf = (byte*)WOLFMQTT_MALLOC(bc->rx_buf_len);
-        if (bc->tx_buf == NULL || bc->rx_buf == NULL) {
-            rc = MQTT_CODE_ERROR_MEMORY;
-        }
-    }
-#endif
-
-    /* Allocate WebSocket context */
-    if (rc == MQTT_CODE_SUCCESS) {
-        ws = (BrokerWsCtx*)WOLFMQTT_MALLOC(sizeof(BrokerWsCtx));
-        if (ws == NULL) {
-            rc = MQTT_CODE_ERROR_MEMORY;
-        }
-        else {
-            XMEMSET(ws, 0, sizeof(*ws));
-            ws->wsi = wsi;
-            ws->status = 1; /* established */
-            bc->ws_ctx = ws;
-        }
-    }
-
-    if (rc == MQTT_CODE_SUCCESS) {
-        bc->sock = BROKER_SOCKET_INVALID;
-        bc->broker = broker;
-        bc->protocol_level = 0;
-        bc->keep_alive_sec = 0;
-        bc->last_rx = WOLFMQTT_BROKER_GET_TIME_S();
-
-        /* Use WS-specific MqttNet callbacks instead of broker->net */
-        bc->net.context = bc;
-        bc->net.connect = BrokerNetConnect; /* no-op, but must be non-NULL */
-        bc->net.read = BrokerWsNetRead;
-        bc->net.write = BrokerWsNetWrite;
-        bc->net.disconnect = BrokerWsNetDisconnect;
-
-#ifdef ENABLE_MQTT_TLS
-        /* lws handles TLS internally for WSS - skip wolfSSL setup */
-        bc->tls_handshake_done = 1;
-#endif
-
-        rc = MqttClient_Init(&bc->client, &bc->net, NULL,
-                bc->tx_buf, BROKER_CLIENT_TX_SZ(bc),
-                bc->rx_buf, BROKER_CLIENT_RX_SZ(bc), broker->timeout_ms);
-        if (rc != MQTT_CODE_SUCCESS) {
-            WBLOG_ERR(broker, "ws client init failed rc=%d", rc);
-        }
-    }
-
-    if (rc == MQTT_CODE_SUCCESS) {
-#ifndef WOLFMQTT_STATIC_MEMORY
-        bc->next = broker->clients;
-        broker->clients = bc;
-#endif
-        WBLOG_INFO(broker, "ws client added (wsi=%p)", (void*)wsi);
-    }
-    else if (bc != NULL) {
-        BROKER_SAFE_FREE(bc->ws_ctx);
-#ifdef WOLFMQTT_STATIC_MEMORY
-        XMEMSET(bc, 0, sizeof(*bc));
-#else
-        BROKER_SAFE_FREE(bc->tx_buf);
-        BROKER_SAFE_FREE(bc->rx_buf);
-        BROKER_SAFE_FREE(bc);
-#endif
-        bc = NULL;
-    }
-
-    return bc;
-}
-
-/* lws server protocol callback */
-static int callback_broker_mqtt(struct lws *wsi,
-    enum lws_callback_reasons reason, void *user, void *in, size_t len)
-{
-    struct lws_context *ctx = lws_get_context(wsi);
-    MqttBroker *broker = (MqttBroker*)lws_context_user(ctx);
-    BrokerWsCtx *ws;
-    BrokerClient *bc;
-
-    (void)user;
-
-    if (reason == LWS_CALLBACK_ESTABLISHED) {
-        bc = BrokerClient_AddWs(broker, wsi);
-        if (bc == NULL) {
-            WBLOG_ERR(broker, "ws accept rejected (alloc)");
-            return -1; /* reject connection */
-        }
-        /* Store BrokerClient pointer in lws user data for later lookup */
-        *((BrokerClient**)lws_wsi_user(wsi)) = bc;
-    }
-    else if (reason == LWS_CALLBACK_RECEIVE) {
-        BrokerClient **bc_ptr = (BrokerClient**)lws_wsi_user(wsi);
-        if (bc_ptr == NULL || *bc_ptr == NULL) return 0;
-        bc = *bc_ptr;
-        ws = (BrokerWsCtx*)bc->ws_ctx;
-        if (ws == NULL || in == NULL || len == 0) return 0;
-
-        /* Append data to rx_buffer */
-        if (ws->rx_len + len <= sizeof(ws->rx_buffer)) {
-            XMEMCPY(ws->rx_buffer + ws->rx_len, in, len);
-            ws->rx_len += len;
-        }
-        else {
-            /* Dropping bytes would desynchronize MQTT packet framing,
-             * so treat overflow as a fatal protocol error. */
-            WBLOG_ERR(broker, "ws rx buffer overflow "
-                "(wsi=%p, have=%d, need=%d, max=%d)",
-                (void*)wsi, (int)ws->rx_len, (int)len,
-                (int)sizeof(ws->rx_buffer));
-            return -1; /* close connection */
-        }
-    }
-    else if (reason == LWS_CALLBACK_SERVER_WRITEABLE) {
-        BrokerClient **bc_ptr = (BrokerClient**)lws_wsi_user(wsi);
-        if (bc_ptr == NULL || *bc_ptr == NULL) return 0;
-        bc = *bc_ptr;
-        ws = (BrokerWsCtx*)bc->ws_ctx;
-        if (ws == NULL) return 0;
-
-        if (ws->pending_close) {
-            /* Broker-initiated close: stage the close code here (inside a
-             * callback) where lws_close_reason() is actually effective, then
-             * return -1 to trigger the WebSocket close handshake. */
-            lws_close_reason(wsi, LWS_CLOSE_STATUS_NORMAL, NULL, 0);
-            return -1;
-        }
-
-        if (ws->tx_pending != NULL && ws->tx_len > 0) {
-            int n = lws_write(wsi, ws->tx_pending + LWS_PRE,
-                ws->tx_len, LWS_WRITE_BINARY);
-            if (n < (int)ws->tx_len) {
-                WBLOG_ERR(broker, "ws write failed (wsi=%p, "
-                    "n=%d, len=%d)", (void*)wsi, n, (int)ws->tx_len);
-                BROKER_SAFE_FREE(ws->tx_pending);
-                ws->tx_len = 0;
-                ws->status = -1;
-                return -1;
-            }
-            BROKER_SAFE_FREE(ws->tx_pending);
-            ws->tx_len = 0;
-        }
-    }
-    else if (reason == LWS_CALLBACK_CLOSED) {
-        BrokerClient **bc_ptr = (BrokerClient**)lws_wsi_user(wsi);
-        if (bc_ptr == NULL || *bc_ptr == NULL) return 0;
-        bc = *bc_ptr;
-        ws = (BrokerWsCtx*)bc->ws_ctx;
-
-        WBLOG_INFO(broker, "ws closed (wsi=%p)", (void*)wsi);
-
-        /* Mark WS context as closed so disconnect callback won't
-         * try to close the wsi again */
-        if (ws != NULL) {
-            ws->status = 0;
-            ws->wsi = NULL;
-
-            if (ws->pending_close) {
-                /* Broker-initiated close: BrokerClient_Remove is already on
-                 * the call stack (BrokerWsNetDisconnect's spin loop drove us
-                 * here). Signal completion and return — do NOT call
-                 * BrokerClient_Remove again. */
-                *bc_ptr = NULL;
-                return 0;
-            }
-        }
-
-        /* Peer-initiated close: publish will and remove client. */
-        BrokerClient_PublishWill(broker, bc);
-        BrokerSubs_RemoveClient(broker, bc);
-        *bc_ptr = NULL;
-        if (ws != NULL && ws->processing) {
-            /* bc is on the call stack inside BrokerClient_Process (a packet
-             * handler triggered a lws_service spin that delivered this CLOSED
-             * callback).  Freeing bc now would leave dangling pointers in the
-             * packet handler — e.g. the fan-out payload pointing into rx_buf,
-             * or the post-fan-out PUBACK write into tx_buf.  Defer the free;
-             * BrokerClient_Process will call BrokerClient_Remove on return. */
-            ws->pending_remove = 1;
-        }
-        else {
-            BrokerClient_Remove(broker, bc, -1);
-        }
-    }
-
-    return 0;
-}
-
-static const struct lws_protocols broker_ws_protocols[] = {
-    {
-        "mqtt",
-        callback_broker_mqtt,
-        sizeof(BrokerClient*),      /* per-session user data = pointer */
-        BROKER_WS_RX_BUF_SZ,       /* rx buffer size */
-        0,                          /* id */
-        NULL,                       /* user */
-        0                           /* tx_packet_size */
-    },
-    LWS_PROTOCOL_LIST_TERM
-};
-
-/* WS-specific MqttNet callbacks */
-static int BrokerWsNetRead(void* context, byte* buf, int buf_len,
-    int timeout_ms)
-{
-    BrokerClient* bc = (BrokerClient*)context;
-    BrokerWsCtx* ws;
-    int ret;
-
-    (void)timeout_ms;
-
-    if (bc == NULL || buf == NULL || buf_len <= 0) {
-        return MQTT_CODE_ERROR_BAD_ARG;
-    }
-
-    ws = (BrokerWsCtx*)bc->ws_ctx;
-    if (ws == NULL || ws->status <= 0) {
-        return MQTT_CODE_ERROR_NETWORK;
-    }
-
-    if (ws->rx_len == 0) {
-        return MQTT_CODE_ERROR_TIMEOUT;
-    }
-
-    ret = (ws->rx_len <= (size_t)buf_len) ? (int)ws->rx_len : buf_len;
-    XMEMCPY(buf, ws->rx_buffer, ret);
-
-    if (ret < (int)ws->rx_len) {
-        XMEMMOVE(ws->rx_buffer, ws->rx_buffer + ret, ws->rx_len - ret);
-        ws->rx_len -= ret;
-    }
-    else {
-        ws->rx_len = 0;
-    }
-
-    return ret;
-}
-
-static int BrokerWsNetWrite(void* context, const byte* buf, int buf_len,
-    int timeout_ms)
-{
-    BrokerClient* bc = (BrokerClient*)context;
-    BrokerWsCtx* ws;
-    int attempts = 0;
-
-    (void)timeout_ms;
-
-    if (bc == NULL || buf == NULL || buf_len <= 0) {
-        return MQTT_CODE_ERROR_BAD_ARG;
-    }
-
-    ws = (BrokerWsCtx*)bc->ws_ctx;
-    if (ws == NULL || ws->status <= 0 || ws->wsi == NULL) {
-        return MQTT_CODE_ERROR_NETWORK;
-    }
-
-    /* Free any prior unsent data */
-    BROKER_SAFE_FREE(ws->tx_pending);
-    ws->tx_len = 0;
-
-    /* Allocate buffer with LWS_PRE prefix space */
-    ws->tx_pending = (byte*)WOLFMQTT_MALLOC(LWS_PRE + buf_len);
-    if (ws->tx_pending == NULL) {
-        return MQTT_CODE_ERROR_MEMORY;
-    }
-    XMEMCPY(ws->tx_pending + LWS_PRE, buf, buf_len);
-    ws->tx_len = (size_t)buf_len;
-
-    /* Request writable callback and service until data is flushed */
-    lws_callback_on_writable((struct lws*)ws->wsi);
-    while (ws->tx_pending != NULL && ws->status > 0 && attempts < 100) {
-        lws_service(lws_get_context((struct lws*)ws->wsi), 0);
-        attempts++;
-    }
-
-    if (ws->tx_pending != NULL) {
-        /* Data was not flushed - connection may be in bad state */
-        BROKER_SAFE_FREE(ws->tx_pending);
-        ws->tx_len = 0;
-        return MQTT_CODE_ERROR_NETWORK;
-    }
-
-    /* Check if the write callback reported an error (it frees tx_pending
-     * and sets status to -1 before returning -1 to lws) */
-    if (ws->status < 0) {
-        return MQTT_CODE_ERROR_NETWORK;
-    }
-
-    return buf_len;
-}
-
-static int BrokerWsNetDisconnect(void* context)
-{
-    BrokerClient* bc = (BrokerClient*)context;
-    BrokerWsCtx* ws;
-
-    if (bc == NULL) {
-        return MQTT_CODE_SUCCESS;
-    }
-
-    ws = (BrokerWsCtx*)bc->ws_ctx;
-    if (ws == NULL) {
-        return MQTT_CODE_SUCCESS;
-    }
-
-    if (ws->wsi != NULL && ws->status > 0) {
-        struct lws *wsi_local = (struct lws*)ws->wsi;
-        struct lws_context *lws_ctx = lws_get_context(wsi_local);
-        int attempts = 0;
-
-        WBLOG_INFO(bc->broker, "ws disconnect (wsi=%p)", (void*)ws->wsi);
-
-        /* Signal the WRITEABLE callback to send a close frame and return -1.
-         * lws_close_reason() is only effective from inside a callback, so the
-         * flag + writable-callback + return(-1) pattern is used here to
-         * properly initiate the WebSocket close handshake. */
-        ws->pending_close = 1;
-        lws_callback_on_writable(wsi_local);
-
-        /* Spin until LWS_CALLBACK_CLOSED fires and clears ws->wsi. */
-        while (ws->wsi != NULL && attempts < 100) {
-            lws_service(lws_ctx, 0);
-            attempts++;
-        }
-
-        /* Fallback: if the close handshake did not complete in time, null out
-         * the per-session user data so any future callback cannot dereference
-         * the about-to-be-freed bc. The wsi is left for lws to reclaim via
-         * its own keep-alive machinery. */
-        if (ws->wsi != NULL) {
-            BrokerClient **bc_ptr = (BrokerClient**)lws_wsi_user(wsi_local);
-            if (bc_ptr != NULL) {
-                *bc_ptr = NULL;
-            }
-            ws->wsi = NULL;
-        }
-    }
-
-    if (ws->tx_pending != NULL) {
-    BROKER_SAFE_FREE(ws->tx_pending);
-    ws->tx_len = 0;
-    ws->rx_len = 0;
-    ws->status = 0;
-
-    BROKER_SAFE_FREE(ws);
-    bc->ws_ctx = NULL;
-
-    return MQTT_CODE_SUCCESS;
-}
-
-static int BrokerWs_Init(MqttBroker* broker)
-{
-    struct lws_context_creation_info info;
-
-    XMEMSET(&info, 0, sizeof(info));
-    info.port = broker->ws_port;
-    info.protocols = broker_ws_protocols;
-    info.gid = -1;
-    info.uid = -1;
-    info.user = broker;
-
-    /* WSS (TLS over WebSocket) configuration */
-    if (broker->ws_tls_cert != NULL) {
-        info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
-        info.ssl_cert_filepath = broker->ws_tls_cert;
-        info.ssl_private_key_filepath = broker->ws_tls_key;
-        if (broker->ws_tls_ca != NULL) {
-            info.ssl_ca_filepath = broker->ws_tls_ca;
-        }
-    }
-
-    broker->ws_ctx = lws_create_context(&info);
-    if (broker->ws_ctx == NULL) {
-        WBLOG_ERR(broker, "lws_create_context failed");
-        return MQTT_CODE_ERROR_NETWORK;
-    }
-
-    WBLOG_INFO(broker, "WebSocket listening on port %d%s",
-        broker->ws_port, broker->ws_tls_cert ? " (WSS)" : "");
-    return MQTT_CODE_SUCCESS;
-}
-
-static void BrokerWs_Free(MqttBroker* broker)
-{
-    if (broker->ws_ctx != NULL) {
-        lws_context_destroy(broker->ws_ctx);
-        broker->ws_ctx = NULL;
-    }
-}
-
-#endif /* ENABLE_MQTT_WEBSOCKET */
 
 /* -------------------------------------------------------------------------- */
 /* Per-client MqttNet callbacks (route through MqttBrokerNet)                  */
@@ -1536,8 +1088,9 @@ static int BrokerNetRead(void* context, byte* buf, int buf_len,
     if (bc == NULL || bc->broker == NULL || buf == NULL || buf_len <= 0) {
         return MQTT_CODE_ERROR_BAD_ARG;
     }
-    return bc->broker->net.read(bc->broker->net.ctx, bc->sock,
-        buf, buf_len, timeout_ms);
+    
+    /* Use unified transport layer */
+    return BrokerTransport_Read(bc, buf, buf_len, timeout_ms);
 }
 
 static int BrokerNetWrite(void* context, const byte* buf, int buf_len,
@@ -1547,8 +1100,9 @@ static int BrokerNetWrite(void* context, const byte* buf, int buf_len,
     if (bc == NULL || bc->broker == NULL || buf == NULL || buf_len <= 0) {
         return MQTT_CODE_ERROR_BAD_ARG;
     }
-    return bc->broker->net.write(bc->broker->net.ctx, bc->sock,
-        buf, buf_len, timeout_ms);
+    
+    /* Use unified transport layer */
+    return BrokerTransport_Write(bc, buf, buf_len, timeout_ms);
 }
 
 static int BrokerNetDisconnect(void* context)
@@ -1571,12 +1125,7 @@ static void BrokerClient_Free(BrokerClient* bc)
         return;
     }
 
-#ifdef ENABLE_MQTT_WEBSOCKET
-    if (bc->ws_ctx != NULL) {
-        (void)BrokerWsNetDisconnect(bc);
-    }
-    else
-#endif
+    /* WebSocket cleanup is now handled by BrokerTransport_Cleanup */
 
 #ifdef ENABLE_MQTT_TLS
     if (bc->client.tls.ssl) {
@@ -1718,6 +1267,12 @@ static BrokerClient* BrokerClient_Add(MqttBroker* broker,
                 wolfSSL_SetIOWriteCtx(bc->client.tls.ssl, &bc->client);
                 MqttClient_Flags(&bc->client, 0, MQTT_CLIENT_FLAG_IS_TLS);
                 bc->tls_handshake_done = 0;
+                
+                /* Initialize TLS transport */
+                rc = BrokerTransport_Init(bc, BROKER_TRANSPORT_TLS, broker);
+                if (rc != MQTT_CODE_SUCCESS) {
+                    WBLOG_ERR(broker, "TLS transport init failed rc=%d", rc);
+                }
             }
         }
         else if (is_tls) {
@@ -1727,10 +1282,24 @@ static BrokerClient* BrokerClient_Add(MqttBroker* broker,
         }
         else {
             bc->tls_handshake_done = 1;
+            
+            /* Initialize TCP transport */
+            rc = BrokerTransport_Init(bc, BROKER_TRANSPORT_TCP, broker);
+            if (rc != MQTT_CODE_SUCCESS) {
+                WBLOG_ERR(broker, "TCP transport init failed rc=%d", rc);
+            }
         }
     }
 #else
     (void)is_tls;
+    
+    /* Initialize TCP transport for non-TLS builds */
+    if (rc == MQTT_CODE_SUCCESS) {
+        rc = BrokerTransport_Init(bc, BROKER_TRANSPORT_TCP, broker);
+        if (rc != MQTT_CODE_SUCCESS) {
+            WBLOG_ERR(broker, "TCP transport init failed rc=%d", rc);
+        }
+    }
 #endif
 
     if (rc == MQTT_CODE_SUCCESS) {
@@ -1788,6 +1357,10 @@ static void BrokerClient_Remove(MqttBroker* broker, BrokerClient* bc, int reason
         WBLOG_INFO(broker, "client disconnected client_id=%s ip=%s total_clients=%d",
             BROKER_CLIENT_ID(bc), bc->client_ip, count_before - 1);
     }
+
+    /* Cleanup transport layer resources */
+    BrokerTransport_Close(bc, broker);
+    BrokerTransport_Cleanup(bc);
 
 #ifndef WOLFMQTT_STATIC_MEMORY
     {
@@ -3597,6 +3170,7 @@ static int BrokerHandle_Connect(BrokerClient* bc, int rx_len,
     #endif
         return rc;
     }
+    WBLOG_INFO(broker, "CONNECT decoded successfully, client_id='%s'", mc.client_id ? mc.client_id : "(null)");
 
     /* Store client ID */
 #ifdef WOLFMQTT_STATIC_MEMORY
@@ -4052,9 +3626,15 @@ static int BrokerHandle_Connect(BrokerClient* bc, int rx_len,
 #if defined(WOLFMQTT_BROKER_WILL) || defined(WOLFMQTT_STATIC_MEMORY)
 send_connack:
 #endif
+    WBLOG_INFO(broker, "Sending CONNACK, return_code=%d", ack.return_code);
     rc = MqttEncode_ConnectAck(bc->tx_buf, BROKER_CLIENT_TX_SZ(bc), &ack);
     if (rc > 0) {
         rc = MqttPacket_Write(&bc->client, bc->tx_buf, rc);
+        if (rc < 0 && rc != MQTT_CODE_CONTINUE) {
+            WBLOG_ERR(broker, "MqttPacket_Write failed: %d", rc);
+        }
+    } else {
+        WBLOG_ERR(broker, "MqttEncode_ConnectAck failed: %d", rc);
     }
 
 #ifdef WOLFMQTT_V5
@@ -4094,6 +3674,7 @@ static int BrokerHandle_Subscribe(BrokerClient* bc, int rx_len,
         WBLOG_ERR(broker, "SUBSCRIBE decode failed rc=%d", rc);
         return rc;
     }
+    WBLOG_INFO(broker, "SUBSCRIBE decoded successfully, topic_count=%d", sub.topic_count);
 
     /* Register subscriptions and build return codes */
     for (i = 0; i < sub.topic_count && i < MAX_MQTT_TOPICS; i++) {
@@ -4732,6 +4313,26 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
     int rc;
     int activity = 0;
 
+    /* Execute transport layer handshake if needed */
+    if (!BrokerTransport_IsHandshakeDone(bc)) {
+        rc = BrokerTransport_Handshake(bc, broker);
+        if (rc == MQTT_CODE_CONTINUE) {
+            return 0; /* Handshake in progress */
+        }
+        if (rc != MQTT_CODE_SUCCESS) {
+            /* Handshake failed, disconnect */
+            WBLOG_ERR(broker, "Transport handshake failed sock=%d transport=%s rc=%d",
+                     (int)bc->sock, BrokerTransport_GetName(bc), rc);
+            BrokerTransport_Close(bc, broker);
+            BrokerTransport_Cleanup(bc);
+            BrokerClient_Remove(broker, bc, -1);
+            return 0;
+        }
+        WBLOG_INFO(broker, "Transport handshake completed sock=%d transport=%s",
+                  (int)bc->sock, BrokerTransport_GetName(bc));
+        return 0; /* No activity - let main loop sleep */
+    }
+
 #ifdef ENABLE_MQTT_TLS
     /* Complete TLS handshake before processing MQTT packets */
     if (!bc->tls_handshake_done) {
@@ -4779,7 +4380,7 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
     rc = MqttPacket_Read(&bc->client, bc->rx_buf, BROKER_CLIENT_RX_SZ(bc), 0);
 
     if (rc == MQTT_CODE_ERROR_TIMEOUT || rc == MQTT_CODE_CONTINUE) {
-        /* No data available - not an error */
+        /* No data available - not an error, silently continue */
         rc = 0;
     }
     else if (rc < 0) {
@@ -4800,11 +4401,6 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
         byte type = MQTT_PACKET_TYPE_GET(bc->rx_buf[0]);
         bc->last_rx = WOLFMQTT_BROKER_GET_TIME_S();
         activity = 1;
-#ifdef ENABLE_MQTT_WEBSOCKET
-        if (bc->ws_ctx != NULL) {
-            ((BrokerWsCtx*)bc->ws_ctx)->processing = 1;
-        }
-#endif
         /* [MQTT-3.1.0-1] First packet must be CONNECT */
         if (type != MQTT_PACKET_TYPE_CONNECT && !bc->connected) {
             WBLOG_ERR(broker,
@@ -4827,11 +4423,16 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
             case MQTT_PACKET_TYPE_CONNECT:
             {
                 int c_rc = BrokerHandle_Connect(bc, rc, broker);
-                if (c_rc <= 0) {
+                if (c_rc < 0 && c_rc != MQTT_CODE_CONTINUE) {
                     /* Decode failed or auth rejected, disconnect */
+                    WBLOG_ERR(broker, "CONNECT handling failed: %d", c_rc);
                     BrokerSubs_RemoveClient(broker, bc);
                     BrokerClient_Remove(broker, bc, -1);
                     return 0;
+                }
+                if (c_rc == MQTT_CODE_CONTINUE) {
+                    /* Write in progress, will complete on next iteration */
+                    return 0;  /* Don't mark as connected yet */
                 }
                 bc->connected = 1;
                 /* 更新连接统计 */
@@ -4863,7 +4464,12 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
                         tmp = tmp->next;
                     }
 #endif
-                    WBLOG_INFO(broker, "client %s is connected, ip=%s proto=%u clean=%d will=%d total_clients=%d",
+                    WBLOG_INFO(broker, "%s client %s is connected, ip=%s proto=%u clean=%d will=%d total_clients=%d",
+#ifdef ENABLE_MQTT_WEBSOCKET
+                        bc->is_websocket ? "WebSocket" : "TCP",
+#else
+                        "TCP",
+#endif
                         BROKER_CLIENT_ID(bc), bc->client_ip,
                         bc->protocol_level, bc->clean_session, bc->will_topic != NULL ? 1 : 0,
                         count);
@@ -4980,18 +4586,7 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
             default:
                 break;
         }
-#ifdef ENABLE_MQTT_WEBSOCKET
-        if (bc->ws_ctx != NULL) {
-            BrokerWsCtx *wsc = (BrokerWsCtx*)bc->ws_ctx;
-            wsc->processing = 0;
-            if (wsc->pending_remove) {
-                /* The peer closed bc's connection while we were dispatching a
-                 * packet (LWS_CALLBACK_CLOSED deferred the free to here). */
-                BrokerClient_Remove(broker, bc, -1);
-                return 0;
-            }
-        }
-#endif
+        /* WebSocket cleanup is handled by BrokerTransport */
     }
 
     /* Check keepalive timeout (MQTT spec 3.1.2.10: 1.5x keep alive) */
@@ -5057,6 +4652,11 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
 #ifdef ENABLE_MQTT_TLS
     broker->listen_sock_tls = BROKER_SOCKET_INVALID;
     broker->port_tls = MQTT_SECURE_PORT;
+#endif
+#ifdef ENABLE_MQTT_WEBSOCKET
+    broker->listen_sock_ws = BROKER_SOCKET_INVALID;
+    broker->port_ws = MQTT_WS_PORT;  /* Default WebSocket port: 8080 */
+    broker->use_ws = 1;              /* Enable WebSocket by default */
 #endif
     broker->running = 0;
     broker->log_level = LOG_LEVEL_WARN; /* Default to WARN level */
@@ -5729,15 +5329,47 @@ int MqttBroker_Step(MqttBroker* broker)
 #endif /* ENABLE_MQTT_TLS */
 
 #ifdef ENABLE_MQTT_WEBSOCKET
-    /* 1b. Service WebSocket connections (non-blocking).
-     * lws_service() uses poll/epoll internally and may block even with
-     * timeout=0 when connections are active.  Cancel the service first
-     * to force the internal poll to return immediately. */
-    if (broker->ws_ctx != NULL) {
-        lws_cancel_service(broker->ws_ctx);
-        lws_service(broker->ws_ctx, 0);
+    /* WebSocket listener */
+    if (broker->use_ws && broker->listen_sock_ws != BROKER_SOCKET_INVALID) {
+        BROKER_SOCKET_T new_sock = BROKER_SOCKET_INVALID;
+        rc = broker->net.accept(broker->net.ctx, broker->listen_sock_ws,
+            &new_sock);
+        if (rc == MQTT_CODE_SUCCESS && new_sock != BROKER_SOCKET_INVALID) {
+        #ifdef WOLFMQTT_POSIX_SOCKET
+            /* Reject socket if >= FD_SETSIZE (would overflow fd_set) */
+            if (new_sock >= FD_SETSIZE) {
+                WBLOG_ERR(broker,
+                    "accept sock=%d rejected (>= FD_SETSIZE)",
+                    (int)new_sock);
+                broker->net.close(broker->net.ctx, new_sock);
+            }
+            else
+        #endif
+            {
+                BrokerClient* bc = BrokerClient_Add(broker, new_sock, 0);
+                if (bc == NULL) {
+                    WBLOG_ERR(broker,
+                        "accept sock=%d rejected (alloc)",
+                        (int)new_sock);
+                    broker->net.close(broker->net.ctx, new_sock);
+                } else {
+                    /* Initialize WebSocket transport */
+                    rc = BrokerTransport_Init(bc, BROKER_TRANSPORT_WEBSOCKET, broker);
+                    if (rc != MQTT_CODE_SUCCESS) {
+                        WBLOG_ERR(broker,
+                            "WebSocket transport init failed sock=%d rc=%d",
+                            (int)new_sock, rc);
+                        BrokerClient_Remove(broker, bc, -1);
+                    } else {
+                        WBLOG_INFO(broker, "New WebSocket connection on sock=%d",
+                                  (int)new_sock);
+                    }
+                }
+                activity = 1;
+            }
+        }
     }
-#endif
+#endif /* ENABLE_MQTT_WEBSOCKET */
 
     /* 2. Process each client */
 #ifdef WOLFMQTT_STATIC_MEMORY
@@ -5806,10 +5438,9 @@ int MqttBroker_Start(MqttBroker* broker)
         return MQTT_CODE_ERROR_BAD_ARG;
     }
 
-    /* Print compile-time macro configuration */
-    PRINTF("=================================================");
+    /* Print compile-time macro configuration */    
     PRINTF("Compile-time Macro Configuration:");
-    PRINTF(" ");
+    PRINTF("=================================================");
 #ifdef WOLFMQTT_BROKER_DEBUG
     PRINTF("WOLFMQTT_BROKER_DEBUG=true");
 #else
@@ -5844,6 +5475,11 @@ int MqttBroker_Start(MqttBroker* broker)
     PRINTF("ENABLE_MQTT_TLS=true");
 #else
     PRINTF("ENABLE_MQTT_TLS=false");
+#endif
+#ifdef ENABLE_MQTT_WEBSOCKET
+    PRINTF("ENABLE_MQTT_WEBSOCKET=true");
+#else
+    PRINTF("ENABLE_MQTT_WEBSOCKET=false");
 #endif
     PRINTF("=================================================");
 
@@ -5935,18 +5571,51 @@ int MqttBroker_Start(MqttBroker* broker)
     }
 
 #ifdef ENABLE_MQTT_WEBSOCKET
-    if (broker->use_websocket) {
-        rc = BrokerWs_Init(broker);
+    /* Start WebSocket listener if enabled */
+    if (broker->use_ws && broker->port_ws > 0) {
+        rc = broker->net.listen(broker->net.ctx, &broker->listen_sock_ws,
+            broker->port_ws, BROKER_LISTEN_BACKLOG);
         if (rc != MQTT_CODE_SUCCESS) {
-            WBLOG_ERR(broker, "WebSocket init failed rc=%d", rc);
+            WBLOG_ERR(broker, "WebSocket listen failed on port %d rc=%d",
+                     broker->port_ws, rc);
             return rc;
         }
+        WBLOG_INFO(broker, "listening on port %d (WebSocket)", broker->port_ws);
     }
 #endif
 
     broker->running = 1;
     return MQTT_CODE_SUCCESS;
 }
+
+#ifdef ENABLE_MQTT_WEBSOCKET
+int MqttBroker_StartWebSocket(MqttBroker* broker, word16 port)
+{
+    int rc;
+    
+    if (broker == NULL || !broker->net.listen) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    broker->port_ws = port;
+    broker->use_ws = 1;
+    
+    rc = broker->net.listen(broker->net.ctx, 
+                           &broker->listen_sock_ws,
+                           port, 
+                           broker->listen_backlog);
+    
+    if (rc != MQTT_CODE_SUCCESS) {
+        WBLOG_ERR(broker, "Failed to start WebSocket listener on port %d: %d",
+                  port, rc);
+        broker->use_ws = 0;
+        return rc;
+    }
+    
+    WBLOG_INFO(broker, "WebSocket listener started on port %d", port);
+    return MQTT_CODE_SUCCESS;
+}
+#endif /* ENABLE_MQTT_WEBSOCKET */
 
 int MqttBroker_Run(MqttBroker* broker)
 {
@@ -6040,7 +5709,11 @@ int MqttBroker_Free(MqttBroker* broker)
 
     /* Close listen sockets */
 #ifdef ENABLE_MQTT_WEBSOCKET
-    BrokerWs_Free(broker);
+    /* WebSocket cleanup is handled by unified transport layer */
+    if (broker->listen_sock_ws != BROKER_SOCKET_INVALID) {
+        broker->net.close(broker->net.ctx, broker->listen_sock_ws);
+        broker->listen_sock_ws = BROKER_SOCKET_INVALID;
+    }
 #endif
 
     if (broker->listen_sock != BROKER_SOCKET_INVALID) {
@@ -6085,7 +5758,7 @@ static void BrokerUsage(const char* prog)
     PRINTF("  -A <file>   CA certificate for mutual TLS (PEM)");
 #endif
 #ifdef ENABLE_MQTT_WEBSOCKET
-    PRINTF("  -w <port>   WebSocket listen port (enables WebSocket)");
+    PRINTF("  -w <port>   WebSocket listen port (default: %d)", MQTT_WS_PORT);
 #endif
     PRINTF("Features:"
 #ifdef WOLFMQTT_BROKER_RETAINED
@@ -6191,8 +5864,8 @@ int wolfmqtt_broker(int argc, char** argv)
 #endif
 #ifdef ENABLE_MQTT_WEBSOCKET
         else if (XSTRCMP(argv[i], "-w") == 0 && i + 1 < argc) {
-            broker.ws_port = (word16)XATOI(argv[++i]);
-            broker.use_websocket = 1;
+            broker.port_ws = (word16)XATOI(argv[++i]);
+            broker.use_ws = 1;
         }
 #endif
         else if (XSTRCMP(argv[i], "-h") == 0) {

@@ -130,3 +130,7 @@ tests/fuzz/broker_fuzz
 tests/fuzz/corpus/
 .zig-cache/
 zig-out/
+
+
+!libs\wslay\lib\libwslay.a
+!libs\wslay\lib\libwslay.so
