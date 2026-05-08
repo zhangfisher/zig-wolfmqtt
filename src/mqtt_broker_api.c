@@ -85,15 +85,6 @@ extern int BrokerHandle_PublishMessage(MqttBroker* broker, MqttPublish* pub_msg)
             b->log(level, format, args);
             va_end(args);
         }
-    #ifdef WOLFMQTT_BROKER_DEBUG
-        else {
-            va_list args;
-            va_start(args, format);
-            vfprintf(stderr, format, args);
-            va_end(args);
-            fprintf(stderr, "\n");
-        }
-    #endif
         (void)level;
     }
     
@@ -185,8 +176,7 @@ static const MimeTypeMap mime_type_table[] = {
     {".ico",  "image/x-icon"},
     {".woff", "font/woff"},
     {".woff2","font/woff2"},
-    {".ttf",  "font/ttf"},
-    {".eot",  "application/vnd.ms-fontobject"},
+    {".ttf",  "font/ttf"}, 
     {".mp4",  "video/mp4"},
     {".webm", "video/webm"},
     {".mp3",  "audio/mpeg"},

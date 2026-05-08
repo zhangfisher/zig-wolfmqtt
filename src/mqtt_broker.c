@@ -1422,11 +1422,8 @@ static void BrokerSubs_OrphanClient(MqttBroker* broker, BrokerClient* bc)
         cur = cur->next;
     }
 #endif
-    if (count > 0) {        
-WBLOG_DBG(broker, "Orphaned subscriptions: client_id=%s count=%d session_expiry_interval=%u",
-            BROKER_STR_VALID(bc->client_id) ? bc->client_id : "(null)",
-            count,
-            (unsigned int)bc->session_expiry_interval);
+    if (count > 0) {
+        /* Orphaned subscriptions tracked for session persistence */
     }
 }
 
@@ -1453,17 +1450,6 @@ static int BrokerSubs_CheckSessionExpiry(MqttBroker* broker)
                 if (sub->session_expiry_interval > 0) {
                     WOLFMQTT_BROKER_TIME_T elapsed = now - sub->disconnect_time;
                     if (elapsed >= (WOLFMQTT_BROKER_TIME_T)sub->session_expiry_interval) {
-WBLOG_DBG(broker, "Session expired: client_id=%s filter=%s disconnect_time=%u now=%u interval=%u elapsed=%u",
-                               BROKER_STR_VALID(sub->client_id) ? sub->client_id : "(null)",
-                               sub->filter,
-                               (unsigned int)sub->disconnect_time,
-                               (unsigned int)now,
-                               (unsigned int)sub->session_expiry_interval,
-                               (unsigned int)elapsed);
-                        WBLOG_DBG(broker,
-                            "session expired client_id=%s filter=%s",
-                            BROKER_STR_VALID(sub->client_id) ? sub->client_id : "(null)",
-                            sub->filter);
                         XMEMSET(sub, 0, sizeof(BrokerSub));
                         removed++;
                     }
@@ -1471,10 +1457,6 @@ WBLOG_DBG(broker, "Session expired: client_id=%s filter=%s disconnect_time=%u no
                 else {
                     /* session_expiry_interval == 0 means session ends on disconnect */
                     /* Remove immediately if disconnect time > 0 */
-                    WBLOG_DBG(broker,
-                        "session ended (clean) client_id=%s filter=%s",
-                        BROKER_STR_VALID(sub->client_id) ? sub->client_id : "(null)",
-                        sub->filter);
                     XMEMSET(sub, 0, sizeof(BrokerSub));
                     removed++;
                 }
@@ -1494,17 +1476,6 @@ WBLOG_DBG(broker, "Session expired: client_id=%s filter=%s disconnect_time=%u no
                 if (cur->session_expiry_interval > 0) {
                     WOLFMQTT_BROKER_TIME_T elapsed = now - cur->disconnect_time;
                     if (elapsed >= (WOLFMQTT_BROKER_TIME_T)cur->session_expiry_interval) {
-WBLOG_DBG(broker, "Session expired: client_id=%s filter=%s disconnect_time=%u now=%u interval=%u elapsed=%u",
-                               BROKER_STR_VALID(cur->client_id) ? cur->client_id : "(null)",
-                               cur->filter,
-                               (unsigned int)cur->disconnect_time,
-                               (unsigned int)now,
-                               (unsigned int)cur->session_expiry_interval,
-                               (unsigned int)elapsed);
-                        WBLOG_DBG(broker,
-                            "session expired client_id=%s filter=%s",
-                            BROKER_STR_VALID(cur->client_id) ? cur->client_id : "(null)",
-                            cur->filter);
                         /* Remove from linked list */
                         if (prev) {
                             prev->next = next;
@@ -2110,8 +2081,7 @@ static void BrokerSubs_ReassociateClient(MqttBroker* broker,
     }
 #endif
     if (count > 0) {
-        WBLOG_DBG(broker, "reassociated %d subs for client_id=%s",
-            count, client_id);
+        /* Subscriptions reassociated for client takeover */
     }
 }
 
@@ -2499,7 +2469,6 @@ static void BrokerPendingWill_Cancel(MqttBroker* broker,
         for (i = 0; i < broker->max_pending_wills; i++) {
             if (broker->pending_wills[i].in_use &&
                 XSTRCMP(broker->pending_wills[i].client_id, client_id) == 0) {
-                WBLOG_DBG(broker, "will cancelled client_id=%s", client_id);
                 XMEMSET(&broker->pending_wills[i], 0,
                     sizeof(BrokerPendingWill));
                 return;
@@ -2514,7 +2483,6 @@ static void BrokerPendingWill_Cancel(MqttBroker* broker,
             BrokerPendingWill* next = pw->next;
             if (pw->client_id != NULL &&
                 XSTRCMP(pw->client_id, client_id) == 0) {
-                WBLOG_DBG(broker, "will cancelled client_id=%s", client_id);
                 if (prev) {
                     prev->next = next;
                 }
@@ -2614,9 +2582,6 @@ static int BrokerPendingWill_Process(MqttBroker* broker)
         while (pw) {
             BrokerPendingWill* next = pw->next;
             if (now >= pw->publish_time) {
-                WBLOG_DBG(broker, "LWT deferred publish client_id=%s topic=%s "
-                    "len=%u", pw->client_id, pw->topic,
-                    (unsigned)pw->payload_len);
                 BrokerClient_PublishWillImmediate(broker, pw->topic,
                     pw->payload, pw->payload_len, pw->qos, pw->retain
 #ifdef WOLFMQTT_V5
@@ -2680,7 +2645,6 @@ static void BrokerRetained_DeliverToClient(MqttBroker* broker,
             /* Skip expired messages */
             if (rm->expiry_sec > 0 &&
                 (now - rm->store_time) >= rm->expiry_sec) {
-                WBLOG_DBG(broker, "retained expired topic=%s", rm->topic);
                 XMEMSET(rm, 0, sizeof(BrokerRetainedMsg));
                 continue;
             }
@@ -2732,7 +2696,6 @@ static void BrokerRetained_DeliverToClient(MqttBroker* broker,
             /* Skip and remove expired messages */
             if (rm->expiry_sec > 0 &&
                 (now - rm->store_time) >= rm->expiry_sec) {
-                WBLOG_DBG(broker, "retained expired topic=%s", rm->topic);
                 if (rm_prev) {
                     rm_prev->next = rm_next;
                 }
@@ -2799,9 +2762,6 @@ static void BrokerClient_PublishWill(MqttBroker* broker, BrokerClient* bc)
     if (!BROKER_STR_VALID(bc->will_topic)) {
         return;
     }
-
-    WBLOG_DBG(broker, "LWT triggered client_id=%s topic=%s qos=%d retain=%d",
-        BROKER_CLIENT_ID(bc), bc->will_topic, bc->will_qos, bc->will_retain);
 
     /* v5 Will Delay Interval: defer publication */
     if (bc->will_delay_sec > 0) {
@@ -3301,8 +3261,6 @@ static int BrokerSend_Disconnect(BrokerClient* bc, byte reason_code)
 
     rc = MqttEncode_Disconnect(bc->tx_buf, BROKER_CLIENT_TX_SZ(bc), &disc);
     if (rc > 0) {
-        WBLOG_DBG(bc->broker, "DISCONNECT send sock=%d reason=0x%02x",
-            (int)bc->sock, reason_code);
         rc = MqttPacket_Write(&bc->client, bc->tx_buf, rc);
     }
     return rc;
@@ -4051,12 +4009,12 @@ static int BrokerHandle_Publish(BrokerClient* bc, int rx_len,
 
         prop = BrokerProps_Find(broker, pub.props, MQTT_PROP_RESP_TOPIC);
         if (prop != NULL && prop->data_str.str != NULL) {
-            WBLOG_INFO(broker, "PUBLISH has Response Topic: %s", prop->data_str.str);
+            WBLOG_DBG(broker, "PUBLISH has Response Topic: %s", prop->data_str.str);
         }
 
         prop = BrokerProps_Find(broker, pub.props, MQTT_PROP_CORRELATION_DATA);
         if (prop != NULL && prop->data_bin.data != NULL && prop->data_bin.len > 0) {
-            WBLOG_INFO(broker, "PUBLISH has Correlation Data: %d bytes", prop->data_bin.len);
+            WBLOG_DBG(broker, "PUBLISH has Correlation Data: %d bytes", prop->data_bin.len);
         }
     }
 #endif
@@ -4648,8 +4606,7 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
                 /* QoS 1 ack from subscriber - delivery complete */
                 MqttPublishResp resp;
                 int decode_rc;
-                BROKER_INIT_MQTT_STRUCT(resp, bc);
-                WBLOG_INFO(bc->broker, "PUBACK recv sock=%d len=%d", (int)bc->sock, rc);
+                BROKER_INIT_MQTT_STRUCT(resp, bc);                
                 decode_rc = MqttDecode_PublishResp(bc->rx_buf, rc,
                         MQTT_PACKET_TYPE_PUBLISH_ACK, &resp);
                 if (decode_rc < 0) {
@@ -4986,8 +4943,7 @@ static int BrokerCommand_DisconnectAll(MqttBroker* broker)
     if (broker == NULL) {
         return MQTT_CODE_ERROR_BAD_ARG;
     }
-
-    WBLOG_INFO(broker, "disconnecting all clients");
+ 
 
 #ifdef WOLFMQTT_STATIC_MEMORY
     {
@@ -5039,8 +4995,7 @@ static int BrokerCommand_HandleReset(MqttBroker* broker,
     if (broker == NULL || resp == NULL) {
         return MQTT_CODE_ERROR_BAD_ARG;
     }
-
-    WBLOG_INFO(broker, "executing reset command");
+ 
 
     /* 1. 断开所有客户端 */
     rc = BrokerCommand_DisconnectAll(broker);
@@ -5081,16 +5036,13 @@ static int BrokerCommand_HandleKick(MqttBroker* broker, const char* client_id,
     }
 
     /* 无参数：踢掉所有客户端 */
-    if (client_id == NULL || *client_id == '\0') {
-        WBLOG_INFO(broker, "executing kick (all clients)");
+    if (client_id == NULL || *client_id == '\0') {        
         resp->code = BROKER_CMD_SUCCESS;
         resp->message = "All clients disconnected";
         return BrokerCommand_DisconnectAll(broker);
     }
 
     /* 有参数：踢掉指定客户端 */
-    WBLOG_INFO(broker, "executing kick for client '%s'", client_id);
-
     target = BrokerClient_FindByClientId(broker, client_id, NULL);
 #ifdef WOLFMQTT_STATIC_MEMORY
     if (target == NULL || !target->in_use) {
@@ -5237,7 +5189,7 @@ static int BrokerCommand_SendResponse(MqttBroker* broker, BrokerClient* sender,
             return MQTT_CODE_ERROR_OUT_OF_BUFFER;
         }
     } else {
-        WBLOG_INFO(broker, "cannot send command response: sender disconnected");
+        WBLOG_DBG(broker, "cannot send command response: sender disconnected");
     }
 
     return MQTT_CODE_SUCCESS;
@@ -5584,11 +5536,6 @@ int MqttBroker_Start(MqttBroker* broker)
     /* Print compile-time macro configuration */    
     PRINTF("Compile-time Macro Configuration:");
     PRINTF("=================================================");
-#ifdef WOLFMQTT_BROKER_DEBUG
-    PRINTF("WOLFMQTT_BROKER_DEBUG=true");
-#else
-    PRINTF("WOLFMQTT_BROKER_DEBUG=false");
-#endif
 #ifdef WOLFMQTT_BROKER_AUTH
     PRINTF("WOLFMQTT_BROKER_AUTH=true");
 #else
