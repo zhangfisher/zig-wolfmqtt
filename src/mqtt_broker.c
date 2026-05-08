@@ -1422,9 +1422,7 @@ static void BrokerSubs_OrphanClient(MqttBroker* broker, BrokerClient* bc)
         cur = cur->next;
     }
 #endif
-    if (count > 0) {
-        WBLOG_INFO(broker, "orphaned %d subs for client_id=%s (session persist)",
-            count, BROKER_STR_VALID(bc->client_id) ? bc->client_id : "(null)");
+    if (count > 0) {        
 WBLOG_DBG(broker, "Orphaned subscriptions: client_id=%s count=%d session_expiry_interval=%u",
             BROKER_STR_VALID(bc->client_id) ? bc->client_id : "(null)",
             count,
@@ -1462,7 +1460,7 @@ WBLOG_DBG(broker, "Session expired: client_id=%s filter=%s disconnect_time=%u no
                                (unsigned int)now,
                                (unsigned int)sub->session_expiry_interval,
                                (unsigned int)elapsed);
-                        WBLOG_INFO(broker,
+                        WBLOG_DBG(broker,
                             "session expired client_id=%s filter=%s",
                             BROKER_STR_VALID(sub->client_id) ? sub->client_id : "(null)",
                             sub->filter);
@@ -1473,7 +1471,7 @@ WBLOG_DBG(broker, "Session expired: client_id=%s filter=%s disconnect_time=%u no
                 else {
                     /* session_expiry_interval == 0 means session ends on disconnect */
                     /* Remove immediately if disconnect time > 0 */
-                    WBLOG_INFO(broker,
+                    WBLOG_DBG(broker,
                         "session ended (clean) client_id=%s filter=%s",
                         BROKER_STR_VALID(sub->client_id) ? sub->client_id : "(null)",
                         sub->filter);
@@ -1503,7 +1501,7 @@ WBLOG_DBG(broker, "Session expired: client_id=%s filter=%s disconnect_time=%u no
                                (unsigned int)now,
                                (unsigned int)cur->session_expiry_interval,
                                (unsigned int)elapsed);
-                        WBLOG_INFO(broker,
+                        WBLOG_DBG(broker,
                             "session expired client_id=%s filter=%s",
                             BROKER_STR_VALID(cur->client_id) ? cur->client_id : "(null)",
                             cur->filter);
@@ -1528,11 +1526,7 @@ WBLOG_DBG(broker, "Session expired: client_id=%s filter=%s disconnect_time=%u no
                 }
                 else {
                     /* session_expiry_interval == 0 means session ends on disconnect */
-                    /* Remove immediately if disconnect time > 0 */
-                    WBLOG_INFO(broker,
-                        "session ended (clean) client_id=%s filter=%s",
-                        BROKER_STR_VALID(cur->client_id) ? cur->client_id : "(null)",
-                        cur->filter);
+                    /* Remove immediately if disconnect time > 0 */                    
                     /* Remove from linked list */
                     if (prev) {
                         prev->next = next;
@@ -1638,10 +1632,7 @@ static int BrokerSubs_Add(MqttBroker* broker, BrokerClient* bc,
             /* 提取实际过滤器 */
             actual_filter = group_end + 1;
             actual_flen = filter_len - (actual_filter - filter);
-            is_shared = 1;
-
-            WBLOG_INFO(broker, "shared sub group=%.*s filter=%s",
-                share_group_len, share_group_src, actual_filter);
+            is_shared = 1; 
         }
     }
 #endif
@@ -2119,7 +2110,7 @@ static void BrokerSubs_ReassociateClient(MqttBroker* broker,
     }
 #endif
     if (count > 0) {
-        WBLOG_INFO(broker, "reassociated %d subs for client_id=%s",
+        WBLOG_DBG(broker, "reassociated %d subs for client_id=%s",
             count, client_id);
     }
 }
@@ -2803,8 +2794,6 @@ static void BrokerRetained_DeliverToClient(MqttBroker* broker,
 static void BrokerClient_PublishWill(MqttBroker* broker, BrokerClient* bc)
 {
     if (broker == NULL || bc == NULL || !bc->has_will) {
-        WBLOG_INFO(broker, "LWT not triggered sock=%d has_will=%d",
-            (int)(bc ? bc->sock : -1), bc ? bc->has_will : -1);
         return;
     }
     if (!BROKER_STR_VALID(bc->will_topic)) {
@@ -3061,6 +3050,15 @@ int BrokerKick_Client(MqttBroker* broker, const char* client_identifier)
 {
     BrokerClient* bc;
     int found = 0;
+    int is_ip_address = 0;
+    
+    /* Check if the identifier looks like an IP address (contains dots) */
+    if (client_identifier != NULL) {
+        const char* dot = XSTRCHR(client_identifier, '.');
+        if (dot != NULL) {
+            is_ip_address = 1;
+        }
+    }
 
     if (broker == NULL || client_identifier == NULL) {
         return MQTT_CODE_ERROR_BAD_ARG;
@@ -3079,10 +3077,23 @@ int BrokerKick_Client(MqttBroker* broker, const char* client_identifier)
         while (bc) {
 #endif
             if (bc->connected) {
-                /* Check by client_id or IP address */
-                if ((BROKER_STR_VALID(bc->client_id) &&
-                     XSTRCMP(bc->client_id, client_identifier) == 0) ||
-                    XSTRCMP(bc->client_ip, client_identifier) == 0) {
+                int should_kick = 0;
+                
+                /* For IP addresses, match all clients with same IP */
+                if (is_ip_address) {
+                    if (XSTRCMP(bc->client_ip, client_identifier) == 0) {
+                        should_kick = 1;
+                    }
+                } 
+                /* For client IDs, match exact client ID */
+                else {
+                    if (BROKER_STR_VALID(bc->client_id) &&
+                        XSTRCMP(bc->client_id, client_identifier) == 0) {
+                        should_kick = 1;
+                    }
+                }
+                
+                if (should_kick) {
                     WBLOG_INFO(broker, "Kicking client client_id=%s ip=%s",
                         BROKER_CLIENT_ID(bc), bc->client_ip);
                     /* Remove subscriptions */
@@ -3090,7 +3101,12 @@ int BrokerKick_Client(MqttBroker* broker, const char* client_identifier)
                     /* Remove client */
                     BrokerClient_Remove(broker, bc, 0);
                     found = 1;
-                    break;
+                    
+                    /* For client IDs, only kick the first match and break */
+                    if (!is_ip_address) {
+                        break;
+                    }
+                    /* For IP addresses, continue to kick all matching clients */
                 }
             }
 #ifndef WOLFMQTT_STATIC_MEMORY
@@ -3320,8 +3336,7 @@ static int BrokerHandle_Connect(BrokerClient* bc, int rx_len,
         if (lwt.props) { (void)MqttProps_Free(lwt.props); }
     #endif
         return rc;
-    }
-    WBLOG_INFO(broker, "CONNECT decoded successfully, client_id='%s'", mc.client_id ? mc.client_id : "(null)");
+    }   
 
     /* Store client ID */
 #ifdef WOLFMQTT_STATIC_MEMORY
@@ -3777,7 +3792,6 @@ static int BrokerHandle_Connect(BrokerClient* bc, int rx_len,
 #if defined(WOLFMQTT_BROKER_WILL) || defined(WOLFMQTT_STATIC_MEMORY)
 send_connack:
 #endif
-    WBLOG_INFO(broker, "Sending CONNACK, return_code=%d", ack.return_code);
     rc = MqttEncode_ConnectAck(bc->tx_buf, BROKER_CLIENT_TX_SZ(bc), &ack);
     if (rc > 0) {
         rc = MqttPacket_Write(&bc->client, bc->tx_buf, rc);
@@ -4805,13 +4819,11 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
     broker->port_tls = MQTT_SECURE_PORT;
 #endif
 #ifdef ENABLE_MQTT_WEBSOCKET
-    broker->listen_sock_ws = BROKER_SOCKET_INVALID;
-    broker->port_ws = MQTT_WS_PORT;  /* Default WebSocket port: 8080 */
-    broker->use_ws = 1;              /* Enable WebSocket by default */
+    broker->enable_ws = 1;         /* Enable WebSocket on unified HTTP port by default */
 #endif
     broker->api_ctx = NULL;          /* API context allocated on start */
     broker->enable_http = 1;         /* Enable HTTP server by default */
-    broker->api_port = MQTT_API_PORT; /* Default API port: 8081 */
+    broker->http_port = MQTT_WS_PORT; /* Default unified HTTP/WebSocket port: 8080 */
     
     /* Set default HTTP Basic authentication credentials */
     XSTRNCPY(broker->http_username, "admin", sizeof(broker->http_username) - 1);
@@ -5492,48 +5504,7 @@ int MqttBroker_Step(MqttBroker* broker)
     }
 #endif /* ENABLE_MQTT_TLS */
 
-#ifdef ENABLE_MQTT_WEBSOCKET
-    /* WebSocket listener */
-    if (broker->use_ws && broker->listen_sock_ws != BROKER_SOCKET_INVALID) {
-        BROKER_SOCKET_T new_sock = BROKER_SOCKET_INVALID;
-        rc = broker->net.accept(broker->net.ctx, broker->listen_sock_ws,
-            &new_sock);
-        if (rc == MQTT_CODE_SUCCESS && new_sock != BROKER_SOCKET_INVALID) {
-        #ifdef WOLFMQTT_POSIX_SOCKET
-            /* Reject socket if >= FD_SETSIZE (would overflow fd_set) */
-            if (new_sock >= FD_SETSIZE) {
-                WBLOG_ERR(broker,
-                    "accept sock=%d rejected (>= FD_SETSIZE)",
-                    (int)new_sock);
-                broker->net.close(broker->net.ctx, new_sock);
-            }
-            else
-        #endif
-            {
-                BrokerClient* bc = BrokerClient_Add(broker, new_sock, 0);
-                if (bc == NULL) {
-                    WBLOG_ERR(broker,
-                        "accept sock=%d rejected (alloc)",
-                        (int)new_sock);
-                    broker->net.close(broker->net.ctx, new_sock);
-                } else {
-                    /* Initialize WebSocket transport */
-                    rc = BrokerTransport_Init(bc, BROKER_TRANSPORT_WEBSOCKET, broker);
-                    if (rc != MQTT_CODE_SUCCESS) {
-                        WBLOG_ERR(broker,
-                            "WebSocket transport init failed sock=%d rc=%d",
-                            (int)new_sock, rc);
-                        BrokerClient_Remove(broker, bc, -1);
-                    } else {
-                        WBLOG_INFO(broker, "New WebSocket connection on sock=%d",
-                                  (int)new_sock);
-                    }
-                }
-                activity = 1;
-            }
-        }
-    }
-#endif /* ENABLE_MQTT_WEBSOCKET */
+    /* WebSocket handling is now integrated into HTTP API listener (unified port) */
 
     /* 2. Process each client */
 #ifdef WOLFMQTT_STATIC_MEMORY
@@ -5743,21 +5714,8 @@ int MqttBroker_Start(MqttBroker* broker)
     }
 
 #ifdef ENABLE_MQTT_WEBSOCKET
-    /* Start WebSocket listener if enabled */
-    if (broker->use_ws && broker->port_ws > 0) {
-        rc = broker->net.listen(broker->net.ctx, &broker->listen_sock_ws,
-            broker->port_ws, BROKER_LISTEN_BACKLOG);
-        if (rc != MQTT_CODE_SUCCESS) {
-            WBLOG_ERR(broker, "WebSocket listen failed on port %d rc=%d",
-                     broker->port_ws, rc);
-            return rc;
-        }
-        WBLOG_INFO(broker, "listening on port %d (WebSocket)", broker->port_ws);
-    }
-#endif
-
-    /* Start HTTP API listener if enabled */
-    if (broker->enable_http && broker->api_port > 0) {
+    /* Start unified HTTP/WebSocket listener if enabled */
+    if ((broker->enable_http || broker->enable_ws) && broker->http_port > 0) {
         /* Allocate API context if not already allocated */
         if (broker->api_ctx == NULL) {
             broker->api_ctx = (MqttBrokerApiContext*)WOLFMQTT_MALLOC(sizeof(MqttBrokerApiContext));
@@ -5767,46 +5725,80 @@ int MqttBroker_Start(MqttBroker* broker)
             }
         }
 
-        rc = MqttBrokerApi_Init(broker, broker->api_ctx, broker->api_port);
+        rc = MqttBrokerApi_Init(broker, broker->api_ctx, broker->http_port);
         if (rc != MQTT_CODE_SUCCESS) {
-            WBLOG_ERR(broker, "API listen failed on port %d rc=%d",
-                     broker->api_port, rc);
+            WBLOG_ERR(broker, "Unified HTTP/WebSocket listen failed on port %d rc=%d",
+                     broker->http_port, rc);
             WOLFMQTT_FREE(broker->api_ctx);
             broker->api_ctx = NULL;
             return rc;
         }
-        WBLOG_INFO(broker, "listening on port %d (HTTP API)", broker->api_port);
+        WBLOG_INFO(broker, "listening on port %d (HTTP/WebSocket)", broker->http_port);
     }
+#else
+    /* Start HTTP-only listener if enabled */
+    if (broker->enable_http && broker->http_port > 0) {
+        /* Allocate API context if not already allocated */
+        if (broker->api_ctx == NULL) {
+            broker->api_ctx = (MqttBrokerApiContext*)WOLFMQTT_MALLOC(sizeof(MqttBrokerApiContext));
+            if (broker->api_ctx == NULL) {
+                WBLOG_ERR(broker, "Failed to allocate API context");
+                return MQTT_CODE_ERROR_MEMORY;
+            }
+        }
+
+        rc = MqttBrokerApi_Init(broker, broker->api_ctx, broker->http_port);
+        if (rc != MQTT_CODE_SUCCESS) {
+            WBLOG_ERR(broker, "HTTP listen failed on port %d rc=%d",
+                     broker->http_port, rc);
+            WOLFMQTT_FREE(broker->api_ctx);
+            broker->api_ctx = NULL;
+            return rc;
+        }
+        WBLOG_INFO(broker, "listening on port %d (HTTP)", broker->http_port);
+    }
+#endif
 
     broker->running = 1;
     return MQTT_CODE_SUCCESS;
 }
 
+/* MqttBroker_StartWebSocket removed - WebSocket now uses unified HTTP port */
+
 #ifdef ENABLE_MQTT_WEBSOCKET
-int MqttBroker_StartWebSocket(MqttBroker* broker, word16 port)
+/* Add WebSocket client after successful handshake (for unified port mode) */
+int MqttBroker_AddWebSocketClient(MqttBroker* broker, BROKER_SOCKET_T sock)
 {
     int rc;
     
-    if (broker == NULL || !broker->net.listen) {
+    if (broker == NULL || sock == BROKER_SOCKET_INVALID) {
         return MQTT_CODE_ERROR_BAD_ARG;
     }
     
-    broker->port_ws = port;
-    broker->use_ws = 1;
+    /* Add client to broker */
+    BrokerClient* bc = BrokerClient_Add(broker, sock, 0);
+    if (bc == NULL) {
+        WBLOG_ERR(broker, "Failed to add WebSocket client on sock=%d", (int)sock);
+        broker->net.close(broker->net.ctx, sock);
+        return MQTT_CODE_ERROR_MEMORY;
+    }
     
-    rc = broker->net.listen(broker->net.ctx, 
-                           &broker->listen_sock_ws,
-                           port, 
-                           broker->listen_backlog);
-    
+    /* Initialize WebSocket transport */
+    rc = BrokerTransport_Init(bc, BROKER_TRANSPORT_WEBSOCKET, broker);
     if (rc != MQTT_CODE_SUCCESS) {
-        WBLOG_ERR(broker, "Failed to start WebSocket listener on port %d: %d",
-                  port, rc);
-        broker->use_ws = 0;
+        WBLOG_ERR(broker, "Failed to init WebSocket transport on sock=%d: %d",
+                  (int)sock, rc);
+        BrokerClient_Remove(broker, bc, -1);
         return rc;
     }
     
-    WBLOG_INFO(broker, "WebSocket listener started on port %d", port);
+    /* Mark WebSocket handshake as already done since it was completed in API handler */
+    MqttWebSocketContext* ws_ctx = (MqttWebSocketContext*)bc->transport.context;
+    if (ws_ctx) {
+        ws_ctx->handshake_done = 1;
+    }
+    
+    WBLOG_INFO(broker, "WebSocket client added successfully on sock=%d", (int)sock);
     return MQTT_CODE_SUCCESS;
 }
 #endif /* ENABLE_MQTT_WEBSOCKET */
@@ -5910,11 +5902,7 @@ int MqttBroker_Free(MqttBroker* broker)
 
     /* Close listen sockets */
 #ifdef ENABLE_MQTT_WEBSOCKET
-    /* WebSocket cleanup is handled by unified transport layer */
-    if (broker->listen_sock_ws != BROKER_SOCKET_INVALID) {
-        broker->net.close(broker->net.ctx, broker->listen_sock_ws);
-        broker->listen_sock_ws = BROKER_SOCKET_INVALID;
-    }
+    /* WebSocket cleanup is handled by unified HTTP/WebSocket transport layer */
 #endif
 
     if (broker->listen_sock != BROKER_SOCKET_INVALID) {
@@ -6065,8 +6053,8 @@ int wolfmqtt_broker(int argc, char** argv)
 #endif
 #ifdef ENABLE_MQTT_WEBSOCKET
         else if (XSTRCMP(argv[i], "-w") == 0 && i + 1 < argc) {
-            broker.port_ws = (word16)XATOI(argv[++i]);
-            broker.use_ws = 1;
+            broker.http_port = (word16)XATOI(argv[++i]);
+            broker.enable_ws = 1;
         }
 #endif
         else if (XSTRCMP(argv[i], "-h") == 0) {

@@ -227,11 +227,15 @@ typedef struct MqttWebSocketContext MqttWebSocketContext;
 /* HTTP API context structure (always enabled) */
 typedef struct MqttBrokerApiContext {
     MqttBroker* broker;
-    BROKER_SOCKET_T api_listen_sock;
-    word16 api_port;
+    BROKER_SOCKET_T http_listen_sock;  /* Unified HTTP/WebSocket listener socket */
+    word16 http_port;                   /* Unified HTTP/WebSocket port (default: 8080) */
     byte use_api;
     char http_username[64];  /* HTTP Basic authentication username */
     char http_password[64];  /* HTTP Basic authentication password */
+    
+    /* Public URLs that don't require authentication */
+    char** public_urls;      /* Array of URL path strings */
+    int public_url_count;    /* Number of public URLs */
 } MqttBrokerApiContext;
 
 /* -------------------------------------------------------------------------- */
@@ -485,9 +489,9 @@ typedef struct MqttBroker {
     byte         tls_version;  /* 0=auto (v23), 12=TLS 1.2, 13=TLS 1.3 */
     byte         tls_ctx_owned; /* 1 if BrokerTls_Init created tls_ctx */
 #endif
-    BROKER_SOCKET_T listen_sock_ws; /* WebSocket 监听套接字 */
-    word16          port_ws;        /* WebSocket 端口 (默认 8080) */
-    byte            use_ws;         /* 是否启用 WebSocket */
+#ifdef ENABLE_MQTT_WEBSOCKET
+    byte            enable_ws;      /* Enable WebSocket on unified HTTP port (default: 1) */
+#endif
     /* Dynamic memory allocation (always used) */
     BrokerClient* clients;
     BrokerSub*    subs;
@@ -502,7 +506,7 @@ typedef struct MqttBroker {
     MqttBrokerDisconnectCb on_disconnect;
     
     byte enable_http;               /* Enable HTTP server (default: 1) */
-    word16 api_port;                /* HTTP API server port (default: 8081) */
+    word16 http_port;               /* Unified HTTP/WebSocket server port (default: 8080) */
     const char* static_dir;         /* Static files directory (NULL = "./www") */
     /* HTTP API support (always enabled) */
     MqttBrokerApiContext* api_ctx;  /* HTTP API context */
@@ -551,8 +555,8 @@ WOLFMQTT_API int BrokerPublish_Message(MqttBroker* broker, const char* topic,
 WOLFMQTT_API int BrokerKick_Client(MqttBroker* broker, const char* client_identifier);
 
 #ifdef ENABLE_MQTT_WEBSOCKET
-/* Start WebSocket listener on specified port */
-WOLFMQTT_API int MqttBroker_StartWebSocket(MqttBroker* broker, word16 port);
+/* Add WebSocket client after successful handshake (for unified port mode) */
+WOLFMQTT_API int MqttBroker_AddWebSocketClient(MqttBroker* broker, BROKER_SOCKET_T sock);
 #endif
 
 /* wolfIP backend initializer.
@@ -577,6 +581,9 @@ WOLFMQTT_API int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* ap
 
 /* Set HTTP Basic authentication credentials */
 WOLFMQTT_API int MqttBrokerApi_SetCredentials(MqttBrokerApiContext* api_ctx, const char* username, const char* password);
+
+/* Set public URLs that don't require authentication */
+WOLFMQTT_API int MqttBrokerApi_SetPublicUrls(MqttBrokerApiContext* api_ctx, const char** urls, int count);
 
 /* Process API events (should be called from main broker loop) */
 WOLFMQTT_API int MqttBrokerApi_Process(MqttBrokerApiContext* api_ctx);

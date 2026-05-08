@@ -8,7 +8,7 @@
 ### 配置变量
 ### ============================================
 
-@baseUrl = http://192.168.116.217:8081
+@baseUrl = http://192.168.116.217:8080
 
 # HTTP Basic Authentication credentials
 # Format: base64(username:password)
@@ -34,11 +34,24 @@
 
 # Authorization: Basic {{basicAuth}}
 
+### ============================================
+### 0. 免认证 URL 测试（需要先配置 public_urls）
+### ============================================
 
-### 
-GET  http://admin:22182666@192.168.116.217:8081/api/clients
+### 访问免认证 URL（不需要 Authorization 头）
+GET {{baseUrl}}/login.html
 
+###
 
+### 访问健康检查端点（如果配置为 public）
+GET {{baseUrl}}/health
+
+###
+
+### 访问需要认证的 URL（没有 Authorization 会返回 401）
+GET {{baseUrl}}/api/stats
+
+###
 ### ============================================
 ### 1. 获取 Broker 统计信息
 ### ============================================

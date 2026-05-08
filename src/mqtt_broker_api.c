@@ -53,6 +53,20 @@
 #include "wolfmqtt/mqtt_types.h"
 #include "wolfmqtt/mqtt_packet.h"
 
+#ifdef ENABLE_MQTT_WEBSOCKET
+    #include "wolfmqtt/mqtt_websocket.h"
+    #include "wolfmqtt/mqtt_broker_transport.h"
+#endif
+
+/* Forward declarations */
+extern int BrokerHandle_PublishMessage(MqttBroker* broker, MqttPublish* pub_msg);
+
+#ifdef ENABLE_MQTT_WEBSOCKET
+/* Forward declarations */
+extern int BrokerHandle_PublishMessage(MqttBroker* broker, MqttPublish* pub_msg);
+/* Note: WebSocket client handling needs to be done through broker's public API */
+#endif
+
 /* API token length requirement */
 #define MIN_API_TOKEN_LENGTH    12
 
@@ -244,8 +258,174 @@ static int http_send_response(MqttBroker* broker, BROKER_SOCKET_T sock,
     return http_send_response_with_headers(broker, sock, status_line, content_type, NULL, body, body_len);
 }
 
+/* Helper function to send JSON response with automatic logging */
+static int send_json_response(MqttBroker* broker, BROKER_SOCKET_T sock, 
+                             int status_code, const char* method, 
+                             const char* path, const char* query,
+                             const char* client_ip, const char* format, ...)
+{
+    char response_body[512];
+    int body_len;
+    va_list args;
+    const char* status_line;
+    int rc;
+    
+    if (!broker) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Build response body */
+    va_start(args, format);
+#ifdef _WIN32
+    body_len = _vsnprintf(response_body, sizeof(response_body), format, args);
+#else
+    body_len = vsnprintf(response_body, sizeof(response_body), format, args);
+#endif
+    va_end(args);
+    
+    if (body_len <= 0 || body_len >= (int)sizeof(response_body)) {
+        return MQTT_CODE_ERROR_OUT_OF_BUFFER;
+    }
+    
+    /* Determine status line */
+    switch (status_code) {
+        case 200: status_line = HTTP_200_OK; break;
+        case 400: status_line = HTTP_400_BAD_REQUEST; break;
+        case 401: status_line = HTTP_401_UNAUTHORIZED; break;
+        case 404: status_line = HTTP_404_NOT_FOUND; break;
+        case 500: status_line = HTTP_500_INTERNAL_ERROR; break;
+        default: status_line = HTTP_500_INTERNAL_ERROR; break;
+    }
+    
+    /* Send response */
+    rc = http_send_response(broker, sock, status_line, CONTENT_TYPE_JSON, 
+                           response_body, body_len);
+    
+    /* Log the response */
+    LOG_API_RESPONSE(broker, status_code, method, path, query, client_ip);
+    
+    return rc;
+}
+
 /* Helper function to decode Base64 */
 extern int ws_base64_decode(const char* src, int src_len, byte* dst, int dst_max);
+
+#ifdef ENABLE_MQTT_WEBSOCKET
+/* Protocol type detection */
+typedef enum {
+    PROTOCOL_UNKNOWN = 0,
+    PROTOCOL_HTTP,
+    PROTOCOL_WEBSOCKET
+} ProtocolType;
+
+/* Detect protocol type from request buffer */
+static ProtocolType detect_protocol_type(const byte* buffer, int len)
+{
+    if (!buffer || len < 10) {
+        return PROTOCOL_UNKNOWN;
+    }
+    
+    /* Check if it's an HTTP request (starts with GET, POST, etc.) */
+    if (XSTRNCMP((const char*)buffer, "GET ", 4) == 0 ||
+        XSTRNCMP((const char*)buffer, "POST ", 5) == 0 ||
+        XSTRNCMP((const char*)buffer, "PUT ", 4) == 0 ||
+        XSTRNCMP((const char*)buffer, "DELETE ", 7) == 0) {
+        
+        /* Check for WebSocket upgrade headers */
+        const char* upgrade_header = strnstr((const char*)buffer, "Upgrade: websocket", len);
+        const char* connection_header = strnstr((const char*)buffer, "Connection: Upgrade", len);
+        
+        if (upgrade_header && connection_header) {
+            return PROTOCOL_WEBSOCKET;
+        }
+        
+        return PROTOCOL_HTTP;
+    }
+    
+    return PROTOCOL_UNKNOWN;
+}
+#endif /* ENABLE_MQTT_WEBSOCKET */
+
+#ifdef ENABLE_MQTT_WEBSOCKET
+/* Handle WebSocket upgrade request */
+static int handle_websocket_upgrade(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock,
+                                   byte* buffer, int len)
+{
+    MqttBroker* broker = api_ctx->broker;
+    MqttWebSocketContext ws_ctx;
+    byte response_buf[1024];
+    word32 response_len = 0;
+    int rc;
+    
+    if (!broker || !buffer || len <= 0) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Initialize WebSocket context */
+    rc = MqttWebSocket_Init(&ws_ctx);
+    if (rc != MQTT_CODE_SUCCESS) {
+        BA_LOG_ERR(broker, "Failed to initialize WebSocket context: %d", rc);
+        return http_send_response(broker, sock, HTTP_500_INTERNAL_ERROR,
+                                 CONTENT_TYPE_TEXT, "Internal Server Error", 21);
+    }
+    
+    /* Set network callbacks */
+    ws_ctx.sock = sock;
+    ws_ctx.broker_net = &broker->net;
+    
+    /* Perform WebSocket handshake */
+    rc = MqttWebSocket_Handshake(&ws_ctx, buffer, (word32)len,
+                                response_buf, sizeof(response_buf),
+                                &response_len);
+    
+    if (rc != MQTT_CODE_SUCCESS) {
+        BA_LOG_ERR(broker, "WebSocket handshake failed: %d", rc);
+        MqttWebSocket_Free(&ws_ctx);
+        return http_send_response(broker, sock, HTTP_400_BAD_REQUEST,
+                                 CONTENT_TYPE_TEXT, "Bad Request", 11);
+    }
+    
+    /* Send handshake response */
+    rc = broker->net.write(broker->net.ctx, sock, response_buf, response_len, broker->timeout_ms);
+    if (rc != (int)response_len) {
+        BA_LOG_ERR(broker, "Failed to send WebSocket handshake response: %d", rc);
+        MqttWebSocket_Free(&ws_ctx);
+        return MQTT_CODE_ERROR_NETWORK;
+    }
+    
+    BA_LOG_INFO(broker, "WebSocket handshake completed on sock=%d, adding client to broker", (int)sock);
+    
+    /* Add client to broker with WebSocket transport */
+    rc = MqttBroker_AddWebSocketClient(broker, sock);
+    if (rc != MQTT_CODE_SUCCESS) {
+        BA_LOG_ERR(broker, "Failed to add WebSocket client: %d", rc);
+        MqttWebSocket_Free(&ws_ctx);
+        return rc;
+    }
+    
+    MqttWebSocket_Free(&ws_ctx);
+    
+    return MQTT_CODE_SUCCESS;
+}
+#endif /* ENABLE_MQTT_WEBSOCKET */
+
+/* Helper function to check if URL is in public (no-auth) list */
+static int is_public_url(MqttBrokerApiContext* api_ctx, const char* url_path)
+{
+    int i;
+    
+    if (!api_ctx || !url_path || !api_ctx->public_urls || api_ctx->public_url_count <= 0) {
+        return 0;  /* No public URLs configured */
+    }
+    
+    for (i = 0; i < api_ctx->public_url_count; i++) {
+        if (api_ctx->public_urls[i] && XSTRCMP(url_path, api_ctx->public_urls[i]) == 0) {
+            return 1;  /* URL matches a public path */
+        }
+    }
+    
+    return 0;  /* Not a public URL */
+}
 
 /* Helper function to validate HTTP Basic authentication */
 static int validate_http_basic_auth(MqttBrokerApiContext* api_ctx, const char* auth_header)
@@ -411,11 +591,9 @@ static int parse_http_request(MqttBroker* broker, byte* buffer, int len,
     return MQTT_CODE_SUCCESS;
 }
 
-/* Forward declaration for BrokerHandle_PublishMessage */
-extern int BrokerHandle_PublishMessage(MqttBroker* broker, MqttPublish* pub_msg);
-
 /* Handle GET /stats endpoint */
-static int handle_get_stats(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock)
+static int handle_get_stats(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock,
+                           const char* client_ip)
 {
     MqttBroker* broker = api_ctx->broker;
     char response_body[512];
@@ -423,13 +601,14 @@ static int handle_get_stats(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock)
     BrokerStats stats;
     
     if (!broker) {
-        return MQTT_CODE_ERROR_BAD_ARG;
+        return send_json_response(broker, sock, 500, "GET", "/api/stats", "", 
+                                 client_ip, "{\"error\":\"Broker not available\"}");
     }
     
     /* Get current stats */
     if (MqttBroker_GetStats(broker, &stats) != MQTT_CODE_SUCCESS) {
-        return http_send_response(broker, sock, HTTP_500_INTERNAL_ERROR, 
-                                 CONTENT_TYPE_JSON, "{\"error\":\"Failed to get stats\"}", 27);
+        return send_json_response(broker, sock, 500, "GET", "/api/stats", "", 
+                                 client_ip, "{\"error\":\"Failed to get stats\"}");
     }
     
     /* Format JSON response */
@@ -453,12 +632,13 @@ static int handle_get_stats(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock)
                         stats.subs,
                         (unsigned long)(WOLFMQTT_BROKER_GET_TIME_S() - stats.start));
     
-    return http_send_response(broker, sock, HTTP_200_OK, CONTENT_TYPE_JSON, 
-                             response_body, body_len);
+    return send_json_response(broker, sock, 200, "GET", "/api/stats", "", 
+                             client_ip, response_body);
 }
 
 /* Handle GET /clients endpoint */
-static int handle_get_clients(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock)
+static int handle_get_clients(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock,
+                             const char* client_ip)
 {
     MqttBroker* broker = api_ctx->broker;
     char response_body[2048];
@@ -466,7 +646,8 @@ static int handle_get_clients(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T soc
     int first = 1;
     
     if (!broker) {
-        return MQTT_CODE_ERROR_BAD_ARG;
+        return send_json_response(broker, sock, 500, "GET", "/api/clients", "", 
+                                 client_ip, "{\"error\":\"Broker not available\"}");
     }
     
     body_len += XSNPRINTF(response_body + body_len, sizeof(response_body) - body_len, "[");
@@ -490,12 +671,13 @@ static int handle_get_clients(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T soc
     
     body_len += XSNPRINTF(response_body + body_len, sizeof(response_body) - body_len, "]");
     
-    return http_send_response(broker, sock, HTTP_200_OK, CONTENT_TYPE_JSON, 
-                             response_body, body_len);
+    return send_json_response(broker, sock, 200, "GET", "/api/clients", "", 
+                             client_ip, response_body);
 }
 
 /* Handle GET /topics/... endpoint */
-static int handle_get_topics(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock, const char* topic_path)
+static int handle_get_topics(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock, 
+                            const char* topic_path, const char* client_ip)
 {
     MqttBroker* broker = api_ctx->broker;
     char response_body[4096];
@@ -503,7 +685,8 @@ static int handle_get_topics(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock
     int first_sub = 1;
     
     if (!broker || !topic_path) {
-        return MQTT_CODE_ERROR_BAD_ARG;
+        return send_json_response(broker, sock, 400, "GET", "/api/topics/", "", 
+                                 client_ip, "{\"error\":\"Invalid parameters\"}");
     }
     
     body_len += XSNPRINTF(response_body + body_len, sizeof(response_body) - body_len, 
@@ -529,19 +712,21 @@ static int handle_get_topics(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock
     
     body_len += XSNPRINTF(response_body + body_len, sizeof(response_body) - body_len, "]}");
     
-    return http_send_response(broker, sock, HTTP_200_OK, CONTENT_TYPE_JSON, 
-                             response_body, body_len);
+    return send_json_response(broker, sock, 200, "GET", "/api/topics/", "", 
+                             client_ip, response_body);
 }
 
 /* Handle GET /options endpoint */
-static int handle_get_options(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock)
+static int handle_get_options(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock,
+                             const char* client_ip)
 {
     MqttBroker* broker = api_ctx->broker;
     char response_body[1024];
     int body_len;
     
     if (!broker) {
-        return MQTT_CODE_ERROR_BAD_ARG;
+        return send_json_response(broker, sock, 500, "GET", "/api/configs", "", 
+                                 client_ip, "{\"error\":\"Broker not available\"}");
     }
     
     /* Format options as JSON - exclude function pointers/callbacks */
@@ -593,8 +778,8 @@ static int handle_get_options(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T soc
                         broker->log_level,
                         broker->enable_stats);
     
-    return http_send_response(broker, sock, HTTP_200_OK, CONTENT_TYPE_JSON, 
-                             response_body, body_len);
+    return send_json_response(broker, sock, 200, "GET", "/api/configs", "", 
+                             client_ip, response_body);
 }
 
 /* Helper function to get MIME type based on file extension */
@@ -788,11 +973,9 @@ static int handle_static_file(MqttBroker* broker, BROKER_SOCKET_T sock, const ch
 /* Handle POST publish/<topic> endpoint */
 static int handle_post_publish(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock, 
                               const char* topic, const char* query_string, 
-                              const char* body, int body_len)
+                              const char* body, int body_len, const char* client_ip)
 {
     MqttBroker* broker = api_ctx->broker;
-    char response_body[256];
-    int resp_len;
     MqttPublish pub_msg;
     int rc;
     MqttQoS qos = MQTT_QOS_0;
@@ -801,8 +984,8 @@ static int handle_post_publish(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
     int decoded_len = 0;
     
     if (!broker || !topic) {
-        return http_send_response(broker, sock, HTTP_400_BAD_REQUEST, 
-                                 CONTENT_TYPE_JSON, "{\"error\":\"Invalid parameters\"}", 27);
+        return send_json_response(broker, sock, 400, "POST", "/api/publish/", "", 
+                                 client_ip, "{\"error\":\"Invalid parameters\"}");
     }
     
     /* Parse query parameters for qos and retain */
@@ -872,12 +1055,12 @@ static int handle_post_publish(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
                     } else {
                         /* Decoding failed */
                         if (decoded_buffer) WOLFMQTT_FREE(decoded_buffer);
-                        return http_send_response(broker, sock, HTTP_400_BAD_REQUEST, 
-                                                 CONTENT_TYPE_JSON, "{\"error\":\"Invalid base64 encoding\"}", 33);
+                        return send_json_response(broker, sock, 400, "POST", "/api/publish/", "", 
+                                                 client_ip, "{\"error\":\"Invalid base64 encoding\"}");
                     }
                 } else {
-                    return http_send_response(broker, sock, HTTP_500_INTERNAL_ERROR, 
-                                             CONTENT_TYPE_JSON, "{\"error\":\"Memory allocation failed\"}", 31);
+                    return send_json_response(broker, sock, 500, "POST", "/api/publish/", "", 
+                                             client_ip, "{\"error\":\"Memory allocation failed\"}");
                 }
             } else {
                 /* Regular text payload */
@@ -902,15 +1085,11 @@ static int handle_post_publish(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
     }
     
     if (rc == MQTT_CODE_SUCCESS) {
-        resp_len = XSNPRINTF(response_body, sizeof(response_body), 
-                            "{\"status\":\"success\",\"message\":\"Published to topic '%s'\"}", topic);
-        return http_send_response(broker, sock, HTTP_200_OK, CONTENT_TYPE_JSON, 
-                                 response_body, resp_len);
+        return send_json_response(broker, sock, 200, "POST", "/api/publish/", "", 
+                                 client_ip, "{\"status\":\"success\",\"message\":\"Published to topic '%s'\"}", topic);
     } else {
-        resp_len = XSNPRINTF(response_body, sizeof(response_body), 
-                            "{\"error\":\"Failed to publish message\",\"code\":%d}", rc);
-        return http_send_response(broker, sock, HTTP_500_INTERNAL_ERROR, CONTENT_TYPE_JSON, 
-                                 response_body, resp_len);
+        return send_json_response(broker, sock, 500, "POST", "/api/publish/", "", 
+                                 client_ip, "{\"error\":\"Failed to publish message\",\"code\":%d}", rc);
     }
 }
 
@@ -970,12 +1149,13 @@ static const ConfigItemDescriptor config_items[] = {
 #endif
     
     /* WebSocket settings */
-    {"use_ws", CONFIG_TYPE_BOOL, CONFIG_OFFSET(use_ws), FIELD_SIZE_BYTE, {0}},
-    {"port_ws", CONFIG_TYPE_UINT, CONFIG_OFFSET(port_ws), FIELD_SIZE_WORD16, {.uint_range = {1, 65535}}},
+#ifdef ENABLE_MQTT_WEBSOCKET
+    {"enable_ws", CONFIG_TYPE_BOOL, CONFIG_OFFSET(enable_ws), FIELD_SIZE_BYTE, {0}},
+#endif
     
     /* Network settings */
     {"port", CONFIG_TYPE_UINT, CONFIG_OFFSET(port), FIELD_SIZE_WORD16, {.uint_range = {1, 65535}}},
-    {"api_port", CONFIG_TYPE_UINT, CONFIG_OFFSET(api_port), FIELD_SIZE_WORD16, {.uint_range = {1, 65535}}},
+    {"http_port", CONFIG_TYPE_UINT, CONFIG_OFFSET(http_port), FIELD_SIZE_WORD16, {.uint_range = {1, 65535}}},
     
     /* Capacity limits */
     {"max_subs", CONFIG_TYPE_UINT, CONFIG_OFFSET(max_subs), FIELD_SIZE_WORD16, {.uint_range = {0, 10000}}},
@@ -1097,26 +1277,22 @@ static int apply_config_value(MqttBroker* broker, const ConfigItemDescriptor* it
 /* Handle POST config/<option> endpoint */
 /* Handle POST /api/configs endpoint - batch config update */
 static int handle_post_configs(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock, 
-                               const char* body, int body_len)
+                               const char* body, int body_len, const char* client_ip)
 {
     MqttBroker* broker = api_ctx->broker;
-    char response_body[512];
-    int resp_len;
     int rc = MQTT_CODE_SUCCESS;
     int updated_count = 0;
     char errors[1024];
     int error_len = 0;
     
     if (!broker) {
-        BA_LOG_ERR(broker, "Config update failed: broker not available");
-        return http_send_response(broker, sock, HTTP_500_INTERNAL_ERROR, 
-                                 CONTENT_TYPE_JSON, "{\"error\":\"Broker not available\"}", 27);
+        return send_json_response(broker, sock, 500, "POST", "/api/configs", "", 
+                                 client_ip, "{\"error\":\"Broker not available\"}");
     }
     
     if (!body || body_len == 0) {
-        BA_LOG_ERR(broker, "Config update failed: empty body");
-        return http_send_response(broker, sock, HTTP_400_BAD_REQUEST, 
-                                 CONTENT_TYPE_JSON, "{\"error\":\"Request body is required\"}", 32);
+        return send_json_response(broker, sock, 400, "POST", "/api/configs", "", 
+                                 client_ip, "{\"error\":\"Request body is required\"}");
     }
     
     /* Parse body in URL-encoded format: option1=value1&option2=value2 */
@@ -1165,88 +1341,70 @@ static int handle_post_configs(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
     
     /* Build response */
     if (updated_count > 0 && rc == MQTT_CODE_SUCCESS) {
-        resp_len = XSNPRINTF(response_body, sizeof(response_body), 
-                            "{\"status\":\"success\",\"message\":\"Updated %d configuration(s)\",\"updated\":%d}", 
-                            updated_count, updated_count);
-        return http_send_response(broker, sock, HTTP_200_OK, CONTENT_TYPE_JSON, 
-                                 response_body, resp_len);
+        return send_json_response(broker, sock, 200, "POST", "/api/configs", "", 
+                                 client_ip, "{\"status\":\"success\",\"message\":\"Updated %d configuration(s)\",\"updated\":%d}", 
+                                 updated_count, updated_count);
     } else if (updated_count > 0 && rc != MQTT_CODE_SUCCESS) {
         /* Partial success - some updated, some failed */
         if (error_len > 0 && error_len < (int)sizeof(errors)) {
             errors[error_len - 2] = '\0'; /* Remove trailing "; " */
         }
-        resp_len = XSNPRINTF(response_body, sizeof(response_body), 
-                            "{\"status\":\"partial\",\"message\":\"Updated %d configuration(s) with errors\",\"updated\":%d,\"errors\":\"%s\"}", 
-                            updated_count, updated_count, errors);
-        return http_send_response(broker, sock, HTTP_200_OK, CONTENT_TYPE_JSON, 
-                                 response_body, resp_len);
+        return send_json_response(broker, sock, 200, "POST", "/api/configs", "", 
+                                 client_ip, "{\"status\":\"partial\",\"message\":\"Updated %d configuration(s) with errors\",\"updated\":%d,\"errors\":\"%s\"}", 
+                                 updated_count, updated_count, errors);
     } else {
         /* All failed */
         if (error_len > 0 && error_len < (int)sizeof(errors)) {
             errors[error_len - 2] = '\0'; /* Remove trailing "; " */
         }
-        resp_len = XSNPRINTF(response_body, sizeof(response_body), 
-                            "{\"status\":\"error\",\"message\":\"Failed to update configurations\",\"errors\":\"%s\"}", 
-                            errors);
-        return http_send_response(broker, sock, HTTP_400_BAD_REQUEST, CONTENT_TYPE_JSON, 
-                                 response_body, resp_len);
+        return send_json_response(broker, sock, 400, "POST", "/api/configs", "", 
+                                 client_ip, "{\"status\":\"error\",\"message\":\"Failed to update configurations\",\"errors\":\"%s\"}", 
+                                 errors);
     }
 }
 
 /* Handle POST reset endpoint */
-static int handle_post_reset(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock)
+static int handle_post_reset(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock,
+                            const char* client_ip)
 {
     MqttBroker* broker = api_ctx->broker;
-    char response_body[128];
-    int resp_len;
     
     if (!broker) {
-        return http_send_response(broker, sock, HTTP_500_INTERNAL_ERROR, 
-                                 CONTENT_TYPE_JSON, "{\"error\":\"Broker not available\"}", 27);
+        return send_json_response(broker, sock, 500, "POST", "/api/reset", "", 
+                                 client_ip, "{\"error\":\"Broker not available\"}");
     }
     
     /* Reset broker statistics */
     MqttBroker_ResetStats(broker);
     
-    resp_len = XSNPRINTF(response_body, sizeof(response_body), 
-                        "{\"status\":\"success\",\"message\":\"Broker reset completed\"}");
-    
-    return http_send_response(broker, sock, HTTP_200_OK, CONTENT_TYPE_JSON, 
-                             response_body, resp_len);
+    return send_json_response(broker, sock, 200, "POST", "/api/reset", "", 
+                             client_ip, "{\"status\":\"success\",\"message\":\"Broker reset completed\"}");
 }
 
 /* Handle POST kick/<client_identifier> endpoint */
 static int handle_post_kick(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock, 
-                           const char* client_identifier)
+                           const char* client_identifier, const char* client_ip)
 {
     MqttBroker* broker = api_ctx->broker;
-    char response_body[256];
-    int resp_len;
     int rc;
     
     if (!broker || !client_identifier) {
-        return http_send_response(broker, sock, HTTP_400_BAD_REQUEST, 
-                                 CONTENT_TYPE_JSON, "{\"error\":\"Invalid client identifier\"}", 33);
+        return send_json_response(broker, sock, 400, "POST", "/api/kick/", "", 
+                                 client_ip, "{\"error\":\"Invalid client identifier\"}");
     }
     
     /* Kick the specified client using the broker's kick function */
     rc = BrokerKick_Client(broker, client_identifier);
     
     if (rc == MQTT_CODE_SUCCESS) {
-        resp_len = XSNPRINTF(response_body, sizeof(response_body), 
-                            "{\"status\":\"success\",\"message\":\"Client '%s' kicked\"}", client_identifier);
-        return http_send_response(broker, sock, HTTP_200_OK, CONTENT_TYPE_JSON, 
-                                 response_body, resp_len);
+        return send_json_response(broker, sock, 200, "POST", "/api/kick/", "", 
+                                 client_ip, "{\"status\":\"success\",\"message\":\"Client '%s' kicked\"}", client_identifier);
     } else if (rc == MQTT_CODE_ERROR_NOT_FOUND) {
-        resp_len = XSNPRINTF(response_body, sizeof(response_body), 
-                            "{\"error\":\"Client '%s' not found\"}", client_identifier);
-        return http_send_response(broker, sock, HTTP_404_NOT_FOUND, CONTENT_TYPE_JSON, 
-                                 response_body, resp_len);
+        return send_json_response(broker, sock, 404, "POST", "/api/kick/", "", 
+                                 client_ip, "{\"error\":\"Client '%s' not found\"}", client_identifier);
     } else {
-        resp_len = XSNPRINTF(response_body, sizeof(response_body), 
-                            "{\"error\":\"Failed to kick client: %d\"}", rc);
-        return http_send_response(broker, sock, HTTP_500_INTERNAL_ERROR, CONTENT_TYPE_JSON, 
-                                 response_body, resp_len);
+        return send_json_response(broker, sock, 500, "POST", "/api/kick/", "", 
+                                 client_ip, "{\"error\":\"Failed to kick client: %d\"}", rc);
     }
 }
 
@@ -1265,6 +1423,32 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
     if (!api_ctx || !buffer || len <= 0) {
         return MQTT_CODE_ERROR_BAD_ARG;
     }
+    
+#ifdef ENABLE_MQTT_WEBSOCKET
+    /* Detect protocol type */
+    ProtocolType proto_type = detect_protocol_type(buffer, len);
+    
+    if (proto_type == PROTOCOL_WEBSOCKET) {
+        /* Handle WebSocket upgrade */
+        MqttBroker* broker = api_ctx->broker;
+        char client_ip[64] = "unknown";
+#ifdef WOLFMQTT_BROKER
+        struct sockaddr_in addr;
+        socklen_t addr_len = sizeof(addr);
+        if (getpeername(sock, (struct sockaddr*)&addr, &addr_len) == 0) {
+            inet_ntop(AF_INET, &addr.sin_addr, client_ip, sizeof(client_ip));
+        }
+#endif
+        BA_LOG_DBG(broker, "WebSocket upgrade request from=%s", client_ip);
+        return handle_websocket_upgrade(api_ctx, sock, buffer, len);
+    } else if (proto_type == PROTOCOL_UNKNOWN) {
+        /* Unknown protocol */
+        MqttBroker* broker = api_ctx->broker;
+        return http_send_response(broker, sock, HTTP_400_BAD_REQUEST, 
+                                 CONTENT_TYPE_TEXT, "Bad Request", 11);
+    }
+    /* Otherwise continue with HTTP processing */
+#endif
     
     /* Get client IP address */
     char client_ip[64] = "unknown";
@@ -1293,13 +1477,18 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
     BA_LOG_DBG(api_ctx->broker, "API Request %s %s%s%s from=%s",
               method, path, (query[0] ? "?" : ""), query, client_ip);
     
-    /* Validate HTTP Basic authentication */
-    if (!validate_http_basic_auth(api_ctx, auth_header)) {
-        LOG_API_RESPONSE(api_ctx->broker, 401, method, path, query, client_ip);
-        return http_send_response_with_headers(api_ctx->broker, sock, HTTP_401_UNAUTHORIZED, 
-                                              CONTENT_TYPE_TEXT,
-                                              WWW_AUTHENTICATE_BASIC,
-                                              "Unauthorized", 12);
+    /* Skip authentication for public URLs */
+    if (!is_public_url(api_ctx, path)) {
+        /* Validate HTTP Basic authentication */
+        if (!validate_http_basic_auth(api_ctx, auth_header)) {
+            LOG_API_RESPONSE(api_ctx->broker, 401, method, path, query, client_ip);
+            return http_send_response_with_headers(api_ctx->broker, sock, HTTP_401_UNAUTHORIZED, 
+                                                  CONTENT_TYPE_TEXT,
+                                                  WWW_AUTHENTICATE_BASIC,
+                                                  "Unauthorized", 12);
+        }
+    } else {
+        BA_LOG_DBG(api_ctx->broker, "Public URL accessed without auth: %s", path);
     }
     
     /* Find body start (after double CRLF) */
@@ -1312,21 +1501,13 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
     /* Route request based on method and path */
     if (XSTRCMP(method, "GET") == 0) {
         if (XSTRCMP(path, "/api/stats") == 0) {
-            rc = handle_get_stats(api_ctx, sock);
-            LOG_API_RESPONSE(api_ctx->broker, 200, method, path, "", client_ip);
-            return rc;
+            return handle_get_stats(api_ctx, sock, client_ip);
         } else if (XSTRCMP(path, "/api/clients") == 0) {
-            rc = handle_get_clients(api_ctx, sock);
-            LOG_API_RESPONSE(api_ctx->broker, 200, method, path, "", client_ip);
-            return rc;
+            return handle_get_clients(api_ctx, sock, client_ip);
         } else if (XSTRNCMP(path, "/api/topics/", 12) == 0) {
-            rc = handle_get_topics(api_ctx, sock, path + 12);
-            LOG_API_RESPONSE(api_ctx->broker, 200, method, path, "", client_ip);
-            return rc;
+            return handle_get_topics(api_ctx, sock, path + 12, client_ip);
         } else if (XSTRCMP(path, "/api/configs") == 0) {
-            rc = handle_get_options(api_ctx, sock);
-            LOG_API_RESPONSE(api_ctx->broker, 200, method, path, "", client_ip);
-            return rc;
+            return handle_get_options(api_ctx, sock, client_ip);
         } else if (XSTRNCMP(path, "/api/", 5) == 0) {
             /* Unknown API endpoint */
             LOG_API_RESPONSE(api_ctx->broker, 404, method, path, query, client_ip);
@@ -1341,21 +1522,13 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
         }
     } else if (XSTRCMP(method, "POST") == 0) {
         if (XSTRNCMP(path, "/api/publish/", 13) == 0) {
-            rc = handle_post_publish(api_ctx, sock, path + 13, query, body_start, body_len);
-            LOG_API_RESPONSE(api_ctx->broker, 200, method, path, "", client_ip);
-            return rc;
+            return handle_post_publish(api_ctx, sock, path + 13, query, body_start, body_len, client_ip);
         } else if (XSTRCMP(path, "/api/configs") == 0) {
-            rc = handle_post_configs(api_ctx, sock, body_start, body_len);
-            LOG_API_RESPONSE(api_ctx->broker, 200, method, path, "", client_ip);
-            return rc;
+            return handle_post_configs(api_ctx, sock, body_start, body_len, client_ip);
         } else if (XSTRCMP(path, "/api/reset") == 0) {
-            rc = handle_post_reset(api_ctx, sock);
-            LOG_API_RESPONSE(api_ctx->broker, 200, method, path, "", client_ip);
-            return rc;
+            return handle_post_reset(api_ctx, sock, client_ip);
         } else if (XSTRNCMP(path, "/api/kick/", 10) == 0) {
-            rc = handle_post_kick(api_ctx, sock, path + 10);
-            LOG_API_RESPONSE(api_ctx->broker, 200, method, path, "", client_ip);
-            return rc;
+            return handle_post_kick(api_ctx, sock, path + 10, client_ip);
         } else {
             LOG_API_RESPONSE(api_ctx->broker, 404, method, path, query, client_ip);
             return http_send_response(api_ctx->broker, sock, HTTP_404_NOT_FOUND, 
@@ -1377,12 +1550,12 @@ static int api_accept_connection(MqttBrokerApiContext* api_ctx)
     byte recv_buffer[HTTP_BUFFER_SIZE];
     int bytes_read;
     
-    if (!broker || api_ctx->api_listen_sock == BROKER_SOCKET_INVALID) {
+    if (!broker || api_ctx->http_listen_sock == BROKER_SOCKET_INVALID) {
         return MQTT_CODE_ERROR_BAD_ARG;
     }
     
     /* Accept new connection */
-    rc = broker->net.accept(broker->net.ctx, api_ctx->api_listen_sock, &new_sock);
+    rc = broker->net.accept(broker->net.ctx, api_ctx->http_listen_sock, &new_sock);
     if (rc != MQTT_CODE_SUCCESS || new_sock == BROKER_SOCKET_INVALID) {
         return MQTT_CODE_CONTINUE; /* No connection available */
     }
@@ -1395,11 +1568,18 @@ static int api_accept_connection(MqttBrokerApiContext* api_ctx)
         return MQTT_CODE_ERROR_NETWORK;
     }
     
-    /* Process HTTP request */
+    /* Process HTTP/WebSocket request */
     rc = handle_http_request(api_ctx, new_sock, recv_buffer, bytes_read);
     
-    /* Close connection */
-    broker->net.close(broker->net.ctx, new_sock);
+    /* For WebSocket connections, the socket is kept open by MqttBroker_AddWebSocketClient
+       For regular HTTP, close after response */
+#ifdef ENABLE_MQTT_WEBSOCKET
+    ProtocolType proto_type = detect_protocol_type(recv_buffer, bytes_read);
+    if (proto_type != PROTOCOL_WEBSOCKET)
+#endif
+    {
+        broker->net.close(broker->net.ctx, new_sock);
+    }
     
     return (rc >= 0) ? MQTT_CODE_SUCCESS : rc;
 }
@@ -1413,7 +1593,7 @@ int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* api_ctx, word16
     
     XMEMSET(api_ctx, 0, sizeof(MqttBrokerApiContext));
     api_ctx->broker = broker;
-    api_ctx->api_port = port;
+    api_ctx->http_port = port;
     api_ctx->use_api = 1;
     
     /* Copy HTTP Basic authentication credentials from broker configuration */
@@ -1424,11 +1604,11 @@ int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* api_ctx, word16
         api_ctx->http_password[sizeof(api_ctx->http_password) - 1] = '\0';
     }
     
-    /* Start listening on API port */
+    /* Start listening on unified HTTP/WebSocket port */
     if (broker->net.listen) {
-        int rc = broker->net.listen(broker->net.ctx, &api_ctx->api_listen_sock, port, 5);
+        int rc = broker->net.listen(broker->net.ctx, &api_ctx->http_listen_sock, port, 5);
         if (rc != MQTT_CODE_SUCCESS) {
-            BA_LOG_ERR(broker, "Failed to start API listener on port %u: %d", port, rc);
+            BA_LOG_ERR(broker, "Failed to start unified HTTP/WebSocket listener on port %u: %d", port, rc);
             api_ctx->use_api = 0;
             return rc;
         }
@@ -1439,6 +1619,14 @@ int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* api_ctx, word16
     } else {
         api_ctx->use_api = 0;
         return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Set default public URLs */
+    {
+        const char* default_public_urls[] = {
+            "/login.html"
+        };
+        MqttBrokerApi_SetPublicUrls(api_ctx, default_public_urls, 1);
     }
     
     return MQTT_CODE_SUCCESS;
@@ -1473,6 +1661,59 @@ int MqttBrokerApi_SetCredentials(MqttBrokerApiContext* api_ctx, const char* user
     return MQTT_CODE_SUCCESS;
 }
 
+/* Set public URLs that don't require authentication */
+int MqttBrokerApi_SetPublicUrls(MqttBrokerApiContext* api_ctx, const char** urls, int count)
+{
+    int i;
+    
+    if (!api_ctx) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Free existing public URLs if any */
+    if (api_ctx->public_urls) {
+        for (i = 0; i < api_ctx->public_url_count; i++) {
+            if (api_ctx->public_urls[i]) {
+                WOLFMQTT_FREE(api_ctx->public_urls[i]);
+            }
+        }
+        WOLFMQTT_FREE(api_ctx->public_urls);
+        api_ctx->public_urls = NULL;
+    }
+    
+    api_ctx->public_url_count = 0;
+    
+    if (!urls || count <= 0) {
+        return MQTT_CODE_SUCCESS;  /* Clear public URLs */
+    }
+    
+    /* Allocate array for URL pointers */
+    api_ctx->public_urls = (char**)WOLFMQTT_MALLOC(sizeof(char*) * count);
+    if (!api_ctx->public_urls) {
+        return MQTT_CODE_ERROR_MEMORY;
+    }
+    
+    /* Copy each URL string */
+    for (i = 0; i < count; i++) {
+        if (urls[i]) {
+            int len = (int)XSTRLEN(urls[i]);
+            api_ctx->public_urls[i] = (char*)WOLFMQTT_MALLOC(len + 1);
+            if (api_ctx->public_urls[i]) {
+                XSTRNCPY(api_ctx->public_urls[i], urls[i], len);
+                api_ctx->public_urls[i][len] = '\0';
+            }
+        } else {
+            api_ctx->public_urls[i] = NULL;
+        }
+    }
+    
+    api_ctx->public_url_count = count;
+    
+    BA_LOG_INFO(api_ctx->broker, "Public URLs configured: %d paths", count);
+    
+    return MQTT_CODE_SUCCESS;
+}
+
 /* Process API events (call from main broker loop) */
 int MqttBrokerApi_Process(MqttBrokerApiContext* api_ctx)
 {
@@ -1486,13 +1727,27 @@ int MqttBrokerApi_Process(MqttBrokerApiContext* api_ctx)
 /* Cleanup API resources */
 void MqttBrokerApi_Free(MqttBrokerApiContext* api_ctx)
 {
+    int i;
+    
     if (!api_ctx) {
         return;
     }
     
-    if (api_ctx->api_listen_sock != BROKER_SOCKET_INVALID && api_ctx->broker) {
-        api_ctx->broker->net.close(api_ctx->broker->net.ctx, api_ctx->api_listen_sock);
-        api_ctx->api_listen_sock = BROKER_SOCKET_INVALID;
+    /* Free public URLs */
+    if (api_ctx->public_urls) {
+        for (i = 0; i < api_ctx->public_url_count; i++) {
+            if (api_ctx->public_urls[i]) {
+                WOLFMQTT_FREE(api_ctx->public_urls[i]);
+            }
+        }
+        WOLFMQTT_FREE(api_ctx->public_urls);
+        api_ctx->public_urls = NULL;
+    }
+    api_ctx->public_url_count = 0;
+    
+    if (api_ctx->http_listen_sock != BROKER_SOCKET_INVALID && api_ctx->broker) {
+        api_ctx->broker->net.close(api_ctx->broker->net.ctx, api_ctx->http_listen_sock);
+        api_ctx->http_listen_sock = BROKER_SOCKET_INVALID;
     }
     
     XMEMSET(api_ctx, 0, sizeof(MqttBrokerApiContext));
