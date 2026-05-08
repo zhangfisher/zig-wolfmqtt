@@ -49,7 +49,11 @@
     #include <arpa/inet.h>
     #include <fcntl.h>
     #include <netinet/in.h>
+#ifdef WOLFMQTT_BROKER_EPOLL
+    #include <sys/epoll.h>
+#else
     #include <sys/select.h>
+#endif
     #include <sys/socket.h>
     #include <time.h>
     #include <unistd.h>
@@ -1058,6 +1062,153 @@ int MqttBrokerNet_Init(MqttBrokerNet* net)
     return MQTT_CODE_SUCCESS;
 }
 
+/* -------------------------------------------------------------------------- */
+/* epoll helper functions (Linux I/O multiplexing)                             */
+/* -------------------------------------------------------------------------- */
+#ifdef WOLFMQTT_BROKER_EPOLL
+
+/* Initialize epoll for the broker */
+static int BrokerEpoll_Init(MqttBroker* broker)
+{
+    if (broker == NULL) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+
+    /* Use configured max_events or default */
+    if (broker->epoll_max_events <= 0) {
+        broker->epoll_max_events = BROKER_EPOLL_MAX_EVENTS_DEFAULT;
+    }
+
+    /* Create epoll instance */
+    broker->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (broker->epoll_fd < 0) {
+        WBLOG_ERR(broker, "epoll_create1 failed: %s", strerror(errno));
+        return MQTT_CODE_ERROR_SYSTEM;
+    }
+
+    /* Allocate event array */
+    broker->epoll_events = (struct epoll_event*)malloc(
+        sizeof(struct epoll_event) * broker->epoll_max_events);
+    if (broker->epoll_events == NULL) {
+        close(broker->epoll_fd);
+        broker->epoll_fd = -1;
+        return MQTT_CODE_ERROR_MEMORY;
+    }
+
+    WBLOG_INFO(broker, "epoll initialized (max_events=%d)", broker->epoll_max_events);
+    return MQTT_CODE_SUCCESS;
+}
+
+/* Cleanup epoll resources */
+static void BrokerEpoll_Cleanup(MqttBroker* broker)
+{
+    if (broker == NULL) {
+        return;
+    }
+
+    if (broker->epoll_events != NULL) {
+        free(broker->epoll_events);
+        broker->epoll_events = NULL;
+    }
+
+    if (broker->epoll_fd >= 0) {
+        close(broker->epoll_fd);
+        broker->epoll_fd = -1;
+    }
+}
+
+/* Add socket to epoll monitoring */
+static int BrokerEpoll_AddSocket(MqttBroker* broker, BROKER_SOCKET_T sock, uint32_t events)
+{
+    struct epoll_event ev;
+    int rc;
+
+    if (broker == NULL || sock < 0) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+
+    memset(&ev, 0, sizeof(ev));
+    ev.events = events;
+    ev.data.fd = sock;
+
+    rc = epoll_ctl(broker->epoll_fd, EPOLL_CTL_ADD, sock, &ev);
+    if (rc < 0) {
+        WBLOG_ERR(broker, "epoll_ctl ADD failed for sock=%d: %s",
+            (int)sock, strerror(errno));
+        return MQTT_CODE_ERROR_NETWORK;
+    }
+
+    return MQTT_CODE_SUCCESS;
+}
+
+/* Remove socket from epoll monitoring */
+static int BrokerEpoll_DelSocket(MqttBroker* broker, BROKER_SOCKET_T sock)
+{
+    int rc;
+
+    if (broker == NULL || sock < 0) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+
+    rc = epoll_ctl(broker->epoll_fd, EPOLL_CTL_DEL, sock, NULL);
+    if (rc < 0) {
+        WBLOG_ERR(broker, "epoll_ctl DEL failed for sock=%d: %s",
+            (int)sock, strerror(errno));
+        return MQTT_CODE_ERROR_NETWORK;
+    }
+
+    return MQTT_CODE_SUCCESS;
+}
+
+/* Modify socket events in epoll */
+static int BrokerEpoll_ModSocket(MqttBroker* broker, BROKER_SOCKET_T sock, uint32_t events)
+{
+    struct epoll_event ev;
+    int rc;
+
+    if (broker == NULL || sock < 0) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+
+    memset(&ev, 0, sizeof(ev));
+    ev.events = events;
+    ev.data.fd = sock;
+
+    rc = epoll_ctl(broker->epoll_fd, EPOLL_CTL_MOD, sock, &ev);
+    if (rc < 0) {
+        WBLOG_ERR(broker, "epoll_ctl MOD failed for sock=%d: %s",
+            (int)sock, strerror(errno));
+        return MQTT_CODE_ERROR_NETWORK;
+    }
+
+    return MQTT_CODE_SUCCESS;
+}
+
+/* Wait for events using epoll */
+static int BrokerEpoll_Wait(MqttBroker* broker, int timeout_ms)
+{
+    int nfds;
+
+    if (broker == NULL || broker->epoll_fd < 0) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+
+    nfds = epoll_wait(broker->epoll_fd, broker->epoll_events,
+        broker->epoll_max_events, timeout_ms);
+
+    if (nfds < 0) {
+        if (errno == EINTR) {
+            return MQTT_CODE_CONTINUE; /* Interrupted by signal */
+        }
+        WBLOG_ERR(broker, "epoll_wait failed: %s", strerror(errno));
+        return MQTT_CODE_ERROR_NETWORK;
+    }
+
+    return nfds; /* Number of events ready */
+}
+
+#endif /* WOLFMQTT_BROKER_EPOLL */
+
 
 
 #endif /* WOLFMQTT_WOLFIP / !WOLFMQTT_BROKER_CUSTOM_NET */
@@ -1308,6 +1459,16 @@ static BrokerClient* BrokerClient_Add(MqttBroker* broker,
         bc->next = broker->clients;
         broker->clients = bc;
 #endif
+
+#ifdef WOLFMQTT_BROKER_EPOLL
+        /* Add socket to epoll monitoring (read events) */
+        /* Use level-triggered mode for better compatibility with WebSocket */
+        rc = BrokerEpoll_AddSocket(broker, sock, EPOLLIN);
+        if (rc != MQTT_CODE_SUCCESS) {
+            WBLOG_ERR(broker, "failed to add sock=%d to epoll", (int)sock);
+            /* Continue anyway - client will be handled in next iteration */
+        }
+#endif
     }
     else if (bc != NULL) {
         BrokerClient_Free(bc);
@@ -1361,6 +1522,13 @@ static void BrokerClient_Remove(MqttBroker* broker, BrokerClient* bc, int reason
     /* Cleanup transport layer resources */
     BrokerTransport_Close(bc, broker);
     BrokerTransport_Cleanup(bc);
+
+#ifdef WOLFMQTT_BROKER_EPOLL
+    /* Remove socket from epoll monitoring */
+    if (bc->sock >= 0) {
+        BrokerEpoll_DelSocket(broker, bc->sock);
+    }
+#endif
 
 #ifndef WOLFMQTT_STATIC_MEMORY
     {
@@ -4789,7 +4957,7 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
     broker->http_password[sizeof(broker->http_password) - 1] = '\0';
     
     broker->running = 0;
-    broker->log_level = LOG_LEVEL_WARN; /* Default to WARN level */
+    broker->log_level = LOG_LEVEL_INFO; /* Default to INFO level */
     broker->log = Log_DefaultCallback;  /* Set default log callback */
     broker->next_packet_id = 1;
 
@@ -4835,6 +5003,13 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
     /* 设置 last_stats_time 为启动时间减去间隔，确保第一次立即发送 */
     broker->last_stats_time = broker->stats.start - broker->stats_interval;
 
+#ifdef WOLFMQTT_BROKER_EPOLL
+    /* Initialize epoll */
+    broker->epoll_fd = -1;
+    broker->epoll_events = NULL;
+    broker->epoll_max_events = BROKER_EPOLL_MAX_EVENTS_DEFAULT;  /* Default value, can be overridden */
+#endif
+
 #if !defined(WOLFMQTT_WOLFIP) && !defined(WOLFMQTT_BROKER_CUSTOM_NET)
     /* For the default POSIX backend, the net callbacks expect ctx to be a
      * MqttBroker* for logging via WBLOG_*. If no context was provided,
@@ -4869,6 +5044,32 @@ int MqttBroker_ResetStats(MqttBroker* broker)
     broker->stats.start = start;
     return MQTT_CODE_SUCCESS;
 }
+
+#ifdef WOLFMQTT_BROKER_EPOLL
+/* Set epoll max events (must be called before MqttBroker_Start) */
+int MqttBroker_SetEpollMaxEvents(MqttBroker* broker, int max_events)
+{
+    if (broker == NULL) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Validate max_events range */
+    if (max_events < 1 || max_events > 4096) {
+        WBLOG_ERR(broker, "epoll max_events out of range (1-4096): %d", max_events);
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Check if broker is already running */
+    if (broker->running || broker->epoll_fd >= 0) {
+        WBLOG_ERR(broker, "cannot set epoll max_events after broker started");
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    broker->epoll_max_events = max_events;
+    WBLOG_INFO(broker, "epoll max_events set to %d", max_events);
+    return MQTT_CODE_SUCCESS;
+}
+#endif
 
 #ifdef WOLFMQTT_BROKER_COMMANDS
 /* -------------------------------------------------------------------------- */
@@ -5395,6 +5596,89 @@ int MqttBroker_Step(MqttBroker* broker)
         return MQTT_CODE_SUCCESS;
     }
 
+#ifdef WOLFMQTT_BROKER_EPOLL
+    /* epoll-based event loop */
+    {
+        int nfds, i;
+
+        /* Wait for events (1ms timeout to allow periodic tasks) */
+        nfds = BrokerEpoll_Wait(broker, 1);
+        if (nfds < 0 && nfds != MQTT_CODE_CONTINUE) {
+            return nfds; /* Error */
+        }
+
+        /* Process ready sockets */
+        for (i = 0; i < nfds; i++) {
+            struct epoll_event* ev = &broker->epoll_events[i];
+            BROKER_SOCKET_T sock = ev->data.fd;
+
+            /* Check if it's a listener socket (new connection) */
+#ifdef ENABLE_MQTT_TLS
+            if (sock == broker->listen_sock || sock == broker->listen_sock_tls) {
+                BROKER_SOCKET_T new_sock = BROKER_SOCKET_INVALID;
+                int is_tls = (sock == broker->listen_sock_tls) ? 1 : 0;
+#else
+            if (sock == broker->listen_sock) {
+                BROKER_SOCKET_T new_sock = BROKER_SOCKET_INVALID;
+                int is_tls = 0;
+#endif
+                
+                rc = broker->net.accept(broker->net.ctx, sock, &new_sock);
+                if (rc == MQTT_CODE_SUCCESS && new_sock != BROKER_SOCKET_INVALID) {
+                    if (BrokerClient_Add(broker, new_sock, is_tls) == NULL) {
+                        WBLOG_ERR(broker,
+                            "accept sock=%d rejected (alloc)",
+                            (int)new_sock);
+                        broker->net.close(broker->net.ctx, new_sock);
+                    }
+                    activity = 1;
+                }
+            }
+#ifdef ENABLE_MQTT_WEBSOCKET
+            else if (broker->api_ctx && sock == broker->api_ctx->http_listen_sock) {
+                /* HTTP/WebSocket listener - delegate to API processor */
+                if (broker->api_ctx) {
+                    rc = MqttBrokerApi_Process(broker->api_ctx);
+                    if (rc != MQTT_CODE_CONTINUE) {
+                        activity = 1;
+                    }
+                }
+            }
+#endif
+            else {
+                /* It's a client socket - find and process it */
+                BrokerClient* bc = NULL;
+#ifdef WOLFMQTT_STATIC_MEMORY
+                int j;
+                for (j = 0; j < broker->max_clients; j++) {
+                    if (broker->clients[j].in_use && broker->clients[j].sock == sock) {
+                        bc = &broker->clients[j];
+                        break;
+                    }
+                }
+#else
+                BrokerClient* cur = broker->clients;
+                while (cur != NULL) {
+                    if (cur->sock == sock) {
+                        bc = cur;
+                        break;
+                    }
+                    cur = cur->next;
+                }
+#endif
+
+                if (bc != NULL) {
+                    rc = BrokerClient_Process(broker, bc);
+                    if (rc > 0) {
+                        activity = 1;
+                    }
+                }
+            }
+        }
+    }
+#else
+    /* select-based event loop (original implementation) */
+
     /* 1. Try to accept new connections (non-blocking) */
 
     /* Plain (non-TLS) listener */
@@ -5498,6 +5782,7 @@ int MqttBroker_Step(MqttBroker* broker)
         }
     }
 #endif
+#endif /* WOLFMQTT_BROKER_EPOLL */
 
     /* 3. Check for expired sessions (v5 Session Expiry Interval) */
 #ifdef WOLFMQTT_V5
@@ -5570,6 +5855,11 @@ int MqttBroker_Start(MqttBroker* broker)
     PRINTF("ENABLE_MQTT_WEBSOCKET=true");
 #else
     PRINTF("ENABLE_MQTT_WEBSOCKET=false");
+#endif
+#ifdef WOLFMQTT_BROKER_EPOLL
+    PRINTF("WOLFMQTT_BROKER_EPOLL=true (epoll I/O multiplexing)");
+#else
+    PRINTF("WOLFMQTT_BROKER_EPOLL=false (select-based)");
 #endif
     PRINTF("=================================================");
 
@@ -5660,6 +5950,34 @@ int MqttBroker_Start(MqttBroker* broker)
         return MQTT_CODE_ERROR_BAD_ARG;
     }
 
+#ifdef WOLFMQTT_BROKER_EPOLL
+    /* Initialize epoll for I/O multiplexing */
+    rc = BrokerEpoll_Init(broker);
+    if (rc != MQTT_CODE_SUCCESS) {
+        WBLOG_ERR(broker, "epoll init failed rc=%d", rc);
+        return rc;
+    }
+
+    /* Add listener sockets to epoll */
+    if (broker->listen_sock != BROKER_SOCKET_INVALID) {
+        rc = BrokerEpoll_AddSocket(broker, broker->listen_sock, EPOLLIN);
+        if (rc != MQTT_CODE_SUCCESS) {
+            WBLOG_ERR(broker, "failed to add listen sock to epoll");
+            return rc;
+        }
+    }
+#ifdef ENABLE_MQTT_TLS
+    if (broker->listen_sock_tls != BROKER_SOCKET_INVALID) {
+        rc = BrokerEpoll_AddSocket(broker, broker->listen_sock_tls, EPOLLIN);
+        if (rc != MQTT_CODE_SUCCESS) {
+            WBLOG_ERR(broker, "failed to add TLS listen sock to epoll");
+            return rc;
+        }
+    }
+#endif
+     
+#endif
+
 #ifdef ENABLE_MQTT_WEBSOCKET
     /* Start unified HTTP/WebSocket listener if enabled */
     if ((broker->enable_http || broker->enable_ws) && broker->http_port > 0) {
@@ -5681,6 +5999,17 @@ int MqttBroker_Start(MqttBroker* broker)
             return rc;
         }
         WBLOG_INFO(broker, "listening on port %d (HTTP/WebSocket)", broker->http_port);
+        
+#ifdef WOLFMQTT_BROKER_EPOLL
+        /* Add HTTP/WebSocket listener socket to epoll */
+        if (broker->api_ctx && broker->api_ctx->http_listen_sock != BROKER_SOCKET_INVALID) {
+            rc = BrokerEpoll_AddSocket(broker, broker->api_ctx->http_listen_sock, EPOLLIN);
+            if (rc != MQTT_CODE_SUCCESS) {
+                WBLOG_ERR(broker, "failed to add HTTP/WebSocket listen sock to epoll");
+                /* Continue anyway - HTTP API will still work via polling */
+            }  
+        }
+#endif
     }
 #else
     /* Start HTTP-only listener if enabled */
@@ -5703,6 +6032,18 @@ int MqttBroker_Start(MqttBroker* broker)
             return rc;
         }
         WBLOG_INFO(broker, "listening on port %d (HTTP)", broker->http_port);
+        
+#ifdef WOLFMQTT_BROKER_EPOLL
+        /* Add HTTP listener socket to epoll */
+        if (broker->api_ctx && broker->api_ctx->http_listen_sock != BROKER_SOCKET_INVALID) {
+            rc = BrokerEpoll_AddSocket(broker, broker->api_ctx->http_listen_sock, EPOLLIN);
+            if (rc != MQTT_CODE_SUCCESS) {
+                WBLOG_ERR(broker, "failed to add HTTP listen sock to epoll");
+            } else {
+                WBLOG_INFO(broker, "HTTP socket added to epoll");
+            }
+        }
+#endif
     }
 #endif
 
@@ -5861,6 +6202,11 @@ int MqttBroker_Free(MqttBroker* broker)
         broker->net.close(broker->net.ctx, broker->listen_sock_tls);
         broker->listen_sock_tls = BROKER_SOCKET_INVALID;
     }
+#endif
+
+#ifdef WOLFMQTT_BROKER_EPOLL
+    /* Cleanup epoll resources */
+    BrokerEpoll_Cleanup(broker);
 #endif
 
     return MQTT_CODE_SUCCESS;

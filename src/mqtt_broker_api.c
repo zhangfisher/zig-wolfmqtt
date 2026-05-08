@@ -1698,8 +1698,7 @@ int MqttBrokerApi_SetPublicUrls(MqttBrokerApiContext* api_ctx, const char** urls
     }
     
     api_ctx->public_url_count = count;
-    
-    BA_LOG_INFO(api_ctx->broker, "Public URLs configured: %d paths", count);
+     
     
     return MQTT_CODE_SUCCESS;
 }

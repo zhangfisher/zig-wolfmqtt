@@ -44,6 +44,16 @@
 #endif
 
 /* -------------------------------------------------------------------------- */
+/* epoll support (Linux I/O multiplexing)                                      */
+/* -------------------------------------------------------------------------- */
+#ifdef WOLFMQTT_BROKER_EPOLL
+    #include <sys/epoll.h>
+    #ifndef BROKER_EPOLL_MAX_EVENTS_DEFAULT
+        #define BROKER_EPOLL_MAX_EVENTS_DEFAULT 64  /* Default max events per epoll_wait */
+    #endif
+#endif
+
+/* -------------------------------------------------------------------------- */
 /* Time abstraction - override for platforms without time.h                    */
 /* -------------------------------------------------------------------------- */
 #ifndef WOLFMQTT_BROKER_TIME_T
@@ -449,6 +459,12 @@ typedef struct MqttBroker {
     MqttBrokerNet net;
     word16  next_packet_id;
 
+#ifdef WOLFMQTT_BROKER_EPOLL
+    int     epoll_fd;          /* epoll file descriptor */
+    struct epoll_event* epoll_events; /* Event array for epoll_wait */
+    int     epoll_max_events;  /* Maximum events per epoll_wait (configurable) */
+#endif
+
     /* Buffer sizes (缓冲区大小配置) */
     word16 rx_buf_sz;           /* 每个客户端的接收缓冲区大小(字节) */
     word16 tx_buf_sz;           /* 每个客户端的发送缓冲区大小(字节) */
@@ -590,6 +606,11 @@ WOLFMQTT_API int MqttBrokerApi_Process(MqttBrokerApiContext* api_ctx);
 
 /* Cleanup API resources */
 WOLFMQTT_API void MqttBrokerApi_Free(MqttBrokerApiContext* api_ctx);
+
+#ifdef WOLFMQTT_BROKER_EPOLL
+/* Set epoll max events (must be called before MqttBroker_Start) */
+WOLFMQTT_API int MqttBroker_SetEpollMaxEvents(MqttBroker* broker, int max_events);
+#endif
 
 #endif /* WOLFMQTT_BROKER */
 

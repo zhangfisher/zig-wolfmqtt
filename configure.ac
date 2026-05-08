@@ -436,6 +436,24 @@ then
 AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_BROKER_API"
 fi
 
+# Broker epoll support (Linux only, default: enabled)
+AC_ARG_ENABLE([broker-epoll],
+[AS_HELP_STRING([--disable-broker-epoll],[Disable broker epoll I/O multiplexing (Linux only)])],
+[ ENABLED_BROKER_EPOLL=$enableval ],
+[ ENABLED_BROKER_EPOLL=yes ]
+)
+if test "x$ENABLED_BROKER_EPOLL" = "xyes"
+then
+    AC_CHECK_FUNCS([epoll_create1 epoll_ctl epoll_wait],
+    [
+        AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_BROKER_EPOLL"
+    ],
+    [
+        AC_MSG_WARN([epoll not available, falling back to select])
+        ENABLED_BROKER_EPOLL=no
+    ])
+fi
+
 
 AM_CONDITIONAL([HAVE_LIBWOLFSSL], [test "x$ENABLED_TLS" = "xyes"])
 AM_CONDITIONAL([HAVE_LIBCURL], [test "x$ENABLED_CURL" = "xyes"])
@@ -585,4 +603,5 @@ echo "   * Multi-thread:              $ENABLED_MULTITHREAD"
 echo "   * Stress:                    $ENABLED_STRESS"
 echo "   * WebSocket:                 yes (always enabled)"
 echo "   * Broker:                    $ENABLED_BROKER"
+echo "   * Broker epoll:              $ENABLED_BROKER_EPOLL"
 echo "   * Fuzz:                      $ENABLED_FUZZ"
