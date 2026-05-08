@@ -270,45 +270,24 @@ if test "x$ENABLED_CURL" = "xyes"; then
     AC_CHECK_LIB([curl],[curl_easy_init],,[AC_MSG_ERROR([libcurl is required and wasn't found on the system. It can be obtained from https://curl.se/download.html.])])
 fi
 
-# MQTT v5.0
-AC_ARG_ENABLE([v5],
-    [AS_HELP_STRING([--enable-v5],[Enable MQTT v5.0 support (default: disabled)])],
-    [ ENABLED_MQTTV50=$enableval ],
-    [ ENABLED_MQTTV50=no ]
-    )
-# Keep old config option for backward compatibility
-AC_ARG_ENABLE([mqtt5],
-    ,
-    [ ENABLED_MQTTV50_old=$enableval ],
-    [ ENABLED_MQTTV50_old=no ]
-    )
-if test "x$ENABLED_MQTTV50_old" = "xyes"
+# WOLFMQTT_V5 is always enabled (MQTT v5.0 support)
+AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_V5"
+if test "x$ENABLED_PROPCB" = "xyes"
 then
-    ENABLED_MQTTV50=yes
-fi
-if test "x$ENABLED_MQTTV50" = "xyes"
-then
-    AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_V5"
-    if test "x$ENABLED_PROPCB" = "xyes"
-    then
-        AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_PROPERTY_CB"
-    fi
+    AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_PROPERTY_CB"
 fi
 
 
-if test "x$ENABLED_MQTTV50" = "xyes"
-then
-    # Property callback, only available when v5 is configured
-    AC_ARG_ENABLE([propcb],
-        [AS_HELP_STRING([--enable-propcb],[Enable property callback (v5 only) (default: enabled)])],
-        [ ENABLED_PROPCB=$enableval ],
-        [ ENABLED_PROPCB=yes ]
-        )
+# Property callback (always available with V5)
+AC_ARG_ENABLE([propcb],
+    [AS_HELP_STRING([--enable-propcb],[Enable property callback (default: enabled)])],
+    [ ENABLED_PROPCB=$enableval ],
+    [ ENABLED_PROPCB=yes ]
+    )
 
-    if test "x$ENABLED_PROPCB" = "xyes"
-    then
-        AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_PROPERTY_CB"
-    fi
+if test "x$ENABLED_PROPCB" = "xyes"
+then
+    AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_PROPERTY_CB"
 fi
 
 # Disconnect callback
@@ -387,23 +366,8 @@ if test "x$ENABLED_STRESS" != "xno"; then
     AM_CFLAGS="$AM_CFLAGS -DNUM_PUB_PER_TASK=$NUM_PUBS"
 fi
 
-# WebSocket
-AC_ARG_ENABLE([websocket],
-    [AS_HELP_STRING([--enable-websocket],[Enable WebSocket support (default: disabled)])],
-    [ ENABLED_WEBSOCKET=$enableval ],
-    [ ENABLED_WEBSOCKET=no ]
-    )
-
-if test "x$ENABLED_WEBSOCKET" = "xyes"
-then
-    AM_CFLAGS="$AM_CFLAGS -DENABLE_MQTT_WEBSOCKET"
-    ENABLED_WEBSOCKET=yes
-
-    # Check for libwebsockets
-    AC_CHECK_LIB([websockets], [lws_create_context],
-        [LIBS="$LIBS -lwebsockets"],
-        [AC_MSG_ERROR([libwebsockets not found. Install libwebsockets or use --disable-websocket])])
-fi
+# ENABLE_MQTT_WEBSOCKET is always enabled (WebSocket support)
+AM_CFLAGS="$AM_CFLAGS -DENABLE_MQTT_WEBSOCKET"
 
 # Broker
 AC_ARG_ENABLE([broker],
@@ -428,15 +392,7 @@ then
 AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_BROKER_NO_RETAINED"
 fi
 
-AC_ARG_ENABLE([broker-will],
-[AS_HELP_STRING([--disable-broker-will],[Disable broker Last Will and Testament support])],
-[ ENABLED_BROKER_WILL=$enableval ],
-[ ENABLED_BROKER_WILL=yes ]
-)
-if test "x$ENABLED_BROKER_WILL" = "xno"
-then
-AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_BROKER_NO_WILL"
-fi
+# WOLFMQTT_BROKER_WILL is always enabled (Last Will support)
 
 AC_ARG_ENABLE([broker-wildcards],
 [AS_HELP_STRING([--disable-broker-wildcards],[Disable broker wildcard subscription support])],
@@ -448,15 +404,7 @@ then
 AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_BROKER_NO_WILDCARDS"
 fi
 
-AC_ARG_ENABLE([broker-auth],
-[AS_HELP_STRING([--disable-broker-auth],[Disable broker username/password authentication])],
-[ ENABLED_BROKER_AUTH=$enableval ],
-[ ENABLED_BROKER_AUTH=yes ]
-)
-if test "x$ENABLED_BROKER_AUTH" = "xno"
-then
-AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_BROKER_NO_AUTH"
-fi
+# WOLFMQTT_BROKER_AUTH is always enabled (authentication support)
 
 AC_ARG_ENABLE([broker-log],
 [AS_HELP_STRING([--disable-broker-log],[Disable broker logging])],
@@ -478,6 +426,16 @@ then
 AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_BROKER_NO_INSECURE"
 fi
 
+AC_ARG_ENABLE([broker-api],
+[AS_HELP_STRING([--disable-broker-api],[Disable broker HTTP API support])],
+[ ENABLED_BROKER_API=$enableval ],
+[ ENABLED_BROKER_API=yes ]
+)
+if test "x$ENABLED_BROKER_API" = "xyes"
+then
+AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_BROKER_API"
+fi
+
 
 AM_CONDITIONAL([HAVE_LIBWOLFSSL], [test "x$ENABLED_TLS" = "xyes"])
 AM_CONDITIONAL([HAVE_LIBCURL], [test "x$ENABLED_CURL" = "xyes"])
@@ -485,11 +443,14 @@ AM_CONDITIONAL([BUILD_STRESS], [test "x$ENABLED_STRESS" != "xno"])
 AM_CONDITIONAL([BUILD_EXAMPLES], [test "x$ENABLED_EXAMPLES" = "xyes"])
 AM_CONDITIONAL([BUILD_STDINCAP], [test "x$ENABLED_STDINCAP" = "xyes"])
 AM_CONDITIONAL([BUILD_SN], [test "x$ENABLED_SN" = "xyes"])
-AM_CONDITIONAL([BUILD_MQTT5], [test "x$ENABLED_MQTTV50" = "xyes"])
+# WOLFMQTT_V5 is always enabled
+AM_CONDITIONAL([BUILD_MQTT5], [true])
 AM_CONDITIONAL([BUILD_NONBLOCK], [test "x$ENABLED_NONBLOCK" = "xyes"])
 AM_CONDITIONAL([BUILD_MULTITHREAD], [test "x$ENABLED_MULTITHREAD" = "xyes"])
-AM_CONDITIONAL([BUILD_WEBSOCKET], [test "x$ENABLED_WEBSOCKET" = "xyes"])
+# ENABLE_MQTT_WEBSOCKET is always enabled
+AM_CONDITIONAL([BUILD_WEBSOCKET], [true])
 AM_CONDITIONAL([BUILD_BROKER], [test "x$ENABLED_BROKER" = "xyes"])
+AM_CONDITIONAL([BUILD_BROKER_API], [test "x$ENABLED_BROKER_API" = "xyes"])
 
 # Fuzz target
 AC_ARG_ENABLE([fuzz],
@@ -613,11 +574,8 @@ echo "   * LIB Flags:                 $LIB"
 echo "   * Disconnect Callback:       $ENABLED_DISCB"
 echo "   * Error Strings:             $ENABLED_ERROR_STRINGS"
 echo "   * Enable MQTT-SN:            $ENABLED_SN"
-echo "   * Enable MQTT v5.0:          $ENABLED_MQTTV50"
-if test "x$ENABLED_MQTTV50" = "xyes"
-then
-    echo "   * Property Callback:         $ENABLED_PROPCB"
-fi
+echo "   * Enable MQTT v5.0:          yes (always enabled)"
+echo "   * Property Callback:         $ENABLED_PROPCB"
 echo "   * Examples:                  $ENABLED_EXAMPLES"
 echo "   * Non-Blocking:              $ENABLED_NONBLOCK"
 echo "   * STDIN Capture:             $ENABLED_STDINCAP"
@@ -625,6 +583,6 @@ echo "   * TLS:                       $ENABLED_TLS"
 echo "   * CURL:                      $ENABLED_CURL"
 echo "   * Multi-thread:              $ENABLED_MULTITHREAD"
 echo "   * Stress:                    $ENABLED_STRESS"
-echo "   * WebSocket:                 $ENABLED_WEBSOCKET"
+echo "   * WebSocket:                 yes (always enabled)"
 echo "   * Broker:                    $ENABLED_BROKER"
 echo "   * Fuzz:                      $ENABLED_FUZZ"

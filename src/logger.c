@@ -88,12 +88,10 @@ void Log_DefaultCallback(LogLevel level, const char* format, va_list args) {
             break;
     }
     
-    printf("[%s] %s - ", Log_GetLevelStr(level), time_str);
-    
+    printf("[%s] %s - ", Log_GetLevelStr(level), time_str);        
+    vprintf(format, args);    
     /* Reset color for message content */
     printf("%s", ANSI_COLOR_RESET);
-    
-    vprintf(format, args);
     printf("\n");
     fflush(stdout);
 }

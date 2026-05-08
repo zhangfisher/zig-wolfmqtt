@@ -1,0 +1,468 @@
+### Broker HTTP API 测试文件
+### 使用方法：
+### 1. 安装 VS Code REST Client 扩展
+### 2. 修改下面的变量值
+### 3. 点击请求上方的 "Send Request" 链接发送请求
+
+### ============================================
+### 配置变量
+### ============================================
+
+@baseUrl = http://192.168.116.217:8081
+@apiToken = 22182666
+@contentType = application/json
+
+### ============================================
+### 认证头（自动使用上面的变量）
+### ============================================
+
+# Authorization: Basic {{apiToken}}
+
+### ============================================
+### 1. 获取 Broker 统计信息
+### ============================================
+
+GET {{baseUrl}}/api/stats
+Authorization: Basic {{apiToken}}
+
+###
+
+### ============================================
+### 2. 获取已连接客户端列表
+### ============================================
+
+GET {{baseUrl}}/api/clients
+Authorization: Basic {{apiToken}}
+
+###
+
+### ============================================
+### 3. 获取特定主题的订阅者信息
+### ============================================
+
+GET {{baseUrl}}/api/topics/test/topic
+Authorization: Basic {{apiToken}}
+
+###
+
+### ============================================
+### 4. 获取 Broker 配置参数
+### ============================================
+
+GET {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+
+###
+
+### ============================================
+### 5. 发布消息到主题 (QoS 0)
+### ============================================
+### 注意：topic 在 URL 路径中，qos 和 retain 作为查询参数
+### body 部分是实际的消息内容
+
+POST {{baseUrl}}/api/publish/test/topic?qos=0&retain=false
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+Hello from REST Client!
+
+###
+
+### ============================================
+### 6. 发布消息到主题 (QoS 1)
+### ============================================
+
+POST {{baseUrl}}/api/publish/test/topic?qos=1&retain=false
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+This is a QoS 1 message
+
+###
+
+### ============================================
+### 7. 发布保留消息
+### ============================================
+
+POST {{baseUrl}}/api/publish/retained/topic?qos=0&retain=true
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+This message will be retained
+
+###
+
+### ============================================
+### 8. 发布 JSON 格式消息
+### ============================================
+
+POST {{baseUrl}}/api/publish/sensor/data?qos=1&retain=false
+Authorization: Basic {{apiToken}}
+Content-Type: application/json
+
+{
+  "temperature": 25.5,
+  "humidity": 60,
+  "timestamp": "2024-01-01T00:00:00Z"
+}
+
+###
+
+### ============================================
+### 8.1 发布二进制负载（使用 base64 编码）
+### ============================================
+### 注意：body 以 "base64:" 开头，后面是 base64 编码的二进制数据
+### 示例：base64 编码的字节序列 0x00 0x01 0x02 0xFF 0xFE 0xFD
+
+POST {{baseUrl}}/api/publish/binary/test?qos=0&retain=false
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+base64:AAEC//79
+
+###
+
+### ============================================
+### 8.2 发布更大的二进制数据（图片/文件片段）
+### ============================================
+### base64 编码的 32 字节测试数据
+
+POST {{baseUrl}}/api/publish/binary/test?qos=1&retain=false
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+base64:QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODk=
+
+###
+
+### ============================================
+### 9. 踢掉指定客户端（通过 Client ID）
+### ============================================
+
+POST {{baseUrl}}/api/kick/mqttx_9eeed6b0
+Authorization: Basic {{apiToken}}
+
+###
+
+### ============================================
+### 10. 踢掉指定客户端（通过 IP 地址）
+### ============================================
+
+POST {{baseUrl}}/api/kick/192.168.116.218
+Authorization: Basic {{apiToken}}
+
+###
+
+### ============================================
+### 11. 重置 Broker 统计信息
+### ============================================
+
+POST {{baseUrl}}/api/reset
+Authorization: Basic {{apiToken}}
+
+###
+
+### ============================================
+### 12. 批量更新配置项（使用URL-encoded格式）
+### ============================================
+
+### 更新单个配置：日志级别
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+log_level=3
+
+###
+
+### 更新单个配置：启用统计
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+enable_stats=true
+
+###
+
+### 批量更新多个配置
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+log_level=2&stats_interval=30&timeout_ms=5000
+
+###
+
+### 批量更新缓冲区大小和客户端限制
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+rx_buf_sz=4096&tx_buf_sz=4096&max_clients=50
+
+###
+
+### 更新所有常用配置
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+log_level=1&stats_interval=60&enable_stats=true&timeout_ms=10000&max_clients=100
+
+###
+
+### 测试无效配置项（应该返回错误）
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+invalid_option=123
+
+###
+
+### 测试混合有效和无效配置（部分成功）
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+log_level=2&invalid_option=456&stats_interval=45
+
+###
+
+### 测试超出范围的值
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+log_level=99&max_clients=9999
+
+###
+
+### ============================================
+### 13. 完整配置项测试
+### ============================================
+
+### 更新所有功能开关
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+enable_stats=true&enable_api=true
+
+###
+
+### 更新网络端口配置
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+port=1883&api_port=8081
+
+###
+
+### 更新缓冲区大小和超时
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+rx_buf_sz=8192&tx_buf_sz=8192&timeout_ms=5000
+
+###
+
+### 更新容量限制（设置为0表示无限制）
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+max_clients=0&max_subs=0&max_retained=0&max_pending_wills=0
+
+###
+
+### 更新负载限制
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+max_payload_len=8192&max_will_payload_len=512
+
+###
+
+### 更新会话持久化配置
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+default_session_expiry_interval=3600
+
+###
+
+### 更新API认证token
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+api_token=newtoken123456789
+
+###
+
+### 测试TLS配置（如果启用TLS）
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+use_tls=false&port_tls=8883&tls_version=0
+
+###
+
+### 测试WebSocket配置（如果启用WebSocket）
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+use_ws=true&port_ws=8080
+
+###
+
+### 测试MQTT 5特性（如果启用V5）
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+max_packet_size=268435455&topic_alias_max=10
+
+###
+
+### 测试认证配置（如果启用认证）
+POST {{baseUrl}}/api/configs
+Authorization: Basic {{apiToken}}
+Content-Type: application/x-www-form-urlencoded
+
+username=admin&password=secret123
+
+###
+
+### ============================================
+### 错误测试用例
+### ============================================
+
+### 13. 测试未授权访问（应该返回 401）
+
+GET {{baseUrl}}/api/stats
+
+###
+
+### 14. 测试错误的 Token（应该返回 401）
+
+GET {{baseUrl}}/api/stats
+Authorization: Basic wrongtoken
+
+###
+
+### 15. 测试不存在的路径（应该返回 404）
+
+GET {{baseUrl}}/api/nonexistent
+Authorization: Basic {{apiToken}}
+
+###
+
+### 16. 测试踢掉不存在的客户端（应该返回 404）
+
+POST {{baseUrl}}/api/kick/nonexistent_client
+Authorization: Basic {{apiToken}}
+
+###
+
+### ============================================
+### 高级测试场景
+### ============================================
+
+### 17. 批量发布消息（需要手动逐个发送）
+
+### 消息 1
+POST {{baseUrl}}/api/publish/batch/test?qos=0
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+Message 1
+
+###
+
+### 消息 2
+POST {{baseUrl}}/api/publish/batch/test?qos=0
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+Message 2
+
+###
+
+### 消息 3
+POST {{baseUrl}}/api/publish/batch/test?qos=0
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+Message 3
+
+###
+
+### 18. 测试不同 QoS 级别
+
+### QoS 0
+POST {{baseUrl}}/api/publish/qos/test?qos=0
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+QoS 0 message
+
+###
+
+### QoS 1
+POST {{baseUrl}}/api/publish/qos/test?qos=1
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+QoS 1 message
+
+###
+
+### QoS 2
+POST {{baseUrl}}/api/publish/qos/test?qos=2
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+QoS 2 message
+
+###
+
+### 19. 测试带特殊字符的主题
+
+POST {{baseUrl}}/api/publish/home/living%20room/temperature?qos=1
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+25.5°C
+
+###
+
+### 20. 测试空 payload
+
+POST {{baseUrl}}/api/publish/empty/topic?qos=0
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+
+###
+
+### ============================================
+### 性能测试（可选）
+### ============================================
+
+### 21. 快速连续发布（手动快速点击发送）
+
+POST {{baseUrl}}/api/publish/perf/test?qos=0
+Authorization: Basic {{apiToken}}
+Content-Type: text/plain
+
+Performance test message
+
+###

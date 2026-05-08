@@ -2957,6 +2957,157 @@ static void BrokerClient_PublishWillImmediate(MqttBroker* broker,
 #endif /* WOLFMQTT_BROKER_WILL */
 
 /* -------------------------------------------------------------------------- */
+/* External API for publishing messages (HTTP API etc.)                        */
+/* -------------------------------------------------------------------------- */
+/* Publish message from external source (e.g., HTTP API) */
+int BrokerPublish_Message(MqttBroker* broker, const char* topic,
+                         const byte* payload, word16 payload_len,
+                         MqttQoS qos, byte retain)
+{
+    if (broker == NULL || topic == NULL) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+
+    /* Handle retain flag */
+    if (retain) {
+        if (payload_len == 0) {
+            BrokerRetained_Delete(broker, topic);
+        }
+        else {
+            int ret_rc = BrokerRetained_Store(broker, topic, payload,
+                payload_len, qos, 0);
+            if (ret_rc != MQTT_CODE_SUCCESS) {
+                WBLOG_ERR(broker, "Retained store failed: %s",
+                    MqttClient_ReturnCodeToString(ret_rc));
+            }
+        }
+    }
+
+    /* Fan out to matching subscribers */
+#ifdef WOLFMQTT_STATIC_MEMORY
+    {
+        int i;
+        for (i = 0; i < broker->max_subs; i++) {
+            BrokerSub* sub = &broker->subs[i];
+            if (!sub->in_use) continue;
+#else
+    {
+        BrokerSub* sub = broker->subs;
+        while (sub) {
+#endif
+            if (sub->client != NULL && sub->client->protocol_level != 0 &&
+                BROKER_STR_VALID(sub->filter) &&
+                BrokerTopicMatch(sub->filter, topic)) {
+                MqttPublish out_pub;
+                MqttQoS eff_qos;
+                int enc_rc;
+                XMEMSET(&out_pub, 0, sizeof(out_pub));
+                out_pub.topic_name = (char*)topic;
+                eff_qos = (qos < sub->qos) ? qos : sub->qos;
+                out_pub.qos = eff_qos;
+                out_pub.retain = 0;
+                out_pub.duplicate = 0;
+                out_pub.buffer = (payload_len > 0) ? (byte*)payload : NULL;
+                out_pub.total_len = payload_len;
+#ifdef WOLFMQTT_V5
+                /* Check receiveMaximum flow control for QoS 1/2 */
+                if (eff_qos >= MQTT_QOS_1 &&
+                    sub->client->protocol_level >= MQTT_CONNECT_PROTOCOL_LEVEL_5) {
+                    if (sub->client->inflight_count >= sub->client->receive_maximum) {
+                        /* Skip this subscriber - inflight window full */
+                        WBLOG_INFO(broker,
+                            "API PUBLISH deferred sock=%d inflight=%d max=%d",
+                            (int)sub->client->sock,
+                            sub->client->inflight_count,
+                            sub->client->receive_maximum);
+                        goto next_sub;
+                    }
+                }
+#endif
+                if (eff_qos >= MQTT_QOS_1) {
+                    out_pub.packet_id = BrokerNextPacketId(broker);
+                }
+#ifdef WOLFMQTT_V5
+                out_pub.protocol_level = sub->client->protocol_level;
+#endif
+                enc_rc = MqttEncode_Publish(sub->client->tx_buf,
+                    BROKER_CLIENT_TX_SZ(sub->client), &out_pub, 0);
+                if (enc_rc > 0) {
+                    (void)MqttPacket_Write(&sub->client->client,
+                        sub->client->tx_buf, enc_rc);
+#ifdef WOLFMQTT_V5
+                    /* Increment inflight counter for QoS 1/2 messages */
+                    if (eff_qos >= MQTT_QOS_1 &&
+                        sub->client->protocol_level >= MQTT_CONNECT_PROTOCOL_LEVEL_5) {
+                        sub->client->inflight_count++;
+                    }
+#endif
+                }
+            }
+#ifdef WOLFMQTT_V5
+            next_sub:
+#endif
+#ifndef WOLFMQTT_STATIC_MEMORY
+            sub = sub->next;
+#endif
+        }
+    }
+
+    return MQTT_CODE_SUCCESS;
+}
+
+/* Kick/disconnect a client by client_id or IP address */
+int BrokerKick_Client(MqttBroker* broker, const char* client_identifier)
+{
+    BrokerClient* bc;
+    int found = 0;
+
+    if (broker == NULL || client_identifier == NULL) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+
+    /* Search for client by client_id or IP address */
+#ifdef WOLFMQTT_STATIC_MEMORY
+    {
+        int i;
+        for (i = 0; i < broker->max_clients; i++) {
+            bc = &broker->clients[i];
+            if (!bc->in_use) continue;
+#else
+    {
+        bc = broker->clients;
+        while (bc) {
+#endif
+            if (bc->connected) {
+                /* Check by client_id or IP address */
+                if ((BROKER_STR_VALID(bc->client_id) &&
+                     XSTRCMP(bc->client_id, client_identifier) == 0) ||
+                    XSTRCMP(bc->client_ip, client_identifier) == 0) {
+                    WBLOG_INFO(broker, "Kicking client client_id=%s ip=%s",
+                        BROKER_CLIENT_ID(bc), bc->client_ip);
+                    /* Remove subscriptions */
+                    BrokerSubs_RemoveClient(broker, bc);
+                    /* Remove client */
+                    BrokerClient_Remove(broker, bc, 0);
+                    found = 1;
+                    break;
+                }
+            }
+#ifndef WOLFMQTT_STATIC_MEMORY
+            bc = bc->next;
+#endif
+        }
+    }
+
+    if (!found) {
+        WBLOG_WARN(broker, "Client not found for kick: %s", client_identifier);
+        return MQTT_CODE_ERROR_NOT_FOUND;
+    }
+
+    return MQTT_CODE_SUCCESS;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Topic matching                                                              */
 /* -------------------------------------------------------------------------- */
 #ifdef WOLFMQTT_BROKER_WILDCARDS
@@ -4658,6 +4809,14 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
     broker->port_ws = MQTT_WS_PORT;  /* Default WebSocket port: 8080 */
     broker->use_ws = 1;              /* Enable WebSocket by default */
 #endif
+    broker->api_ctx = NULL;          /* API context allocated on start */
+    broker->enable_api = 1;          /* Enable HTTP API by default */
+    broker->api_port = MQTT_API_PORT; /* Default API port: 8081 */
+    
+    /* Set default API token */
+    XSTRNCPY(broker->api_token, "22182666", sizeof(broker->api_token) - 1);
+    broker->api_token[sizeof(broker->api_token) - 1] = '\0';
+    
     broker->running = 0;
     broker->log_level = LOG_LEVEL_WARN; /* Default to WARN level */
     broker->log = Log_DefaultCallback;  /* Set default log callback */
@@ -5424,7 +5583,15 @@ int MqttBroker_Step(MqttBroker* broker)
         activity = 1;
     }
 
-    /* 5. 定期发送统计消息到 $sys/broker/stats */
+    /* 5. Process HTTP API requests */
+    if (broker->api_ctx != NULL) {
+        rc = MqttBrokerApi_Process(broker->api_ctx);
+        if (rc != MQTT_CODE_CONTINUE) {
+            activity = 1;
+        }
+    }
+
+    /* 6. 定期发送统计消息到 $sys/broker/stats */
     MqttBroker_PublishStats(broker);
 
     return activity ? MQTT_CODE_SUCCESS : MQTT_CODE_CONTINUE;
@@ -5584,6 +5751,28 @@ int MqttBroker_Start(MqttBroker* broker)
     }
 #endif
 
+    /* Start HTTP API listener if enabled */
+    if (broker->enable_api && broker->api_port > 0) {
+        /* Allocate API context if not already allocated */
+        if (broker->api_ctx == NULL) {
+            broker->api_ctx = (MqttBrokerApiContext*)WOLFMQTT_MALLOC(sizeof(MqttBrokerApiContext));
+            if (broker->api_ctx == NULL) {
+                WBLOG_ERR(broker, "Failed to allocate API context");
+                return MQTT_CODE_ERROR_MEMORY;
+            }
+        }
+
+        rc = MqttBrokerApi_Init(broker, broker->api_ctx, broker->api_port);
+        if (rc != MQTT_CODE_SUCCESS) {
+            WBLOG_ERR(broker, "API listen failed on port %d rc=%d",
+                     broker->api_port, rc);
+            WOLFMQTT_FREE(broker->api_ctx);
+            broker->api_ctx = NULL;
+            return rc;
+        }
+        WBLOG_INFO(broker, "listening on port %d (HTTP API)", broker->api_port);
+    }
+
     broker->running = 1;
     return MQTT_CODE_SUCCESS;
 }
@@ -5688,6 +5877,13 @@ int MqttBroker_Free(MqttBroker* broker)
     /* Clean up pending wills and retained messages */
     BrokerPendingWill_FreeAll(broker);
     BrokerRetained_FreeAll(broker);
+
+    /* Clean up HTTP API */
+    if (broker->api_ctx != NULL) {
+        MqttBrokerApi_Free(broker->api_ctx);
+        WOLFMQTT_FREE(broker->api_ctx);
+        broker->api_ctx = NULL;
+    }
 
 #ifdef ENABLE_MQTT_TLS
     if (broker->tls_ctx != NULL) {

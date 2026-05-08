@@ -1,51 +1,31 @@
-/* base64-encode.c
+/* ws_base64.c
+ *
+ * Base64 encoding and decoding functions for WebSocket and HTTP API
+ */
 
-   Copyright (C) 2002 Niels Möller
-
-   This file is part of GNU Nettle.
-
-   GNU Nettle is free software: you can redistribute it and/or
-   modify it under the terms of either:
-
-     * the GNU Lesser General Public License as published by the Free
-       Software Foundation; either version 3 of the License, or (at your
-       option) any later version.
-
-   or
-
-     * the GNU General Public License as published by the Free
-       Software Foundation; either version 2 of the License, or (at your
-       option) any later version.
-
-   or both in parallel, as here.
-
-   GNU Nettle is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-   General Public License for more details.
-
-   You should have received copies of the GNU General Public License and
-   the GNU Lesser General Public License along with this program.  If
-   not, see http://www.gnu.org/licenses/.
-*/
-
-#if HAVE_CONFIG_H
+#ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
 
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
 
-#include "base64.h"
+#include "wolfmqtt/mqtt_types.h"
+
+/* ========================================================================= */
+/* Base64 Encoding Functions (Original - for WebSocket)                      */
+/* ========================================================================= */
 
 #define ENCODE(alphabet,x) ((alphabet)[0x3F & (x)])
 
 static void
 encode_raw(const char *alphabet,
-	   char *dst, size_t length, const uint8_t *src)
+           char *dst, size_t length, const unsigned char *src)
 {
-  const uint8_t *in = src + length;
-  char *out = dst + BASE64_ENCODE_RAW_LENGTH(length);
+  const unsigned char *in = src + length;
+  char *out = dst + ((length + 2) / 3) * 4;
 
   unsigned left_over = length % 3;
 
@@ -54,20 +34,20 @@ encode_raw(const char *alphabet,
       in -= left_over;
       *--out = '=';
       switch(left_over)
-	{
-	case 1:
-	  *--out = '=';
-	  *--out = ENCODE(alphabet, (in[0] << 4));
-	  break;
-	  
-	case 2:
-	  *--out = ENCODE(alphabet, (in[1] << 2));
-	  *--out = ENCODE(alphabet, ((in[0] << 4) | (in[1] >> 4)));
-	  break;
+        {
+        case 1:
+          *--out = '=';
+          *--out = ENCODE(alphabet, (in[0] << 4));
+          break;
+          
+        case 2:
+          *--out = ENCODE(alphabet, (in[1] << 2));
+          *--out = ENCODE(alphabet, ((in[0] << 4) | (in[1] >> 4)));
+          break;
 
-	default:
-	  abort();
-	}
+        default:
+          abort();
+        }
       *--out = ENCODE(alphabet, (in[0] >> 2));
     }
   
@@ -89,103 +69,93 @@ static const char base64_encode_table[64] =
   "0123456789+/";
 
 void
-base64_encode_raw(char *dst, size_t length, const uint8_t *src)
+base64_encode_raw(char *dst, size_t length, const unsigned char *src)
 {
   encode_raw(base64_encode_table, dst, length, src);
 }
 
-void
-base64_encode_init(struct base64_encode_ctx *ctx)
+/* ========================================================================= */
+/* Base64 Decoding Functions (New - for HTTP API binary payload)            */
+/* ========================================================================= */
+
+/* Base64 decode table - maps ASCII to 6-bit values, -1 for invalid */
+static const signed char base64_decode_table[256] = {
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1, -1, 63,
+    52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1,
+    -1,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+    15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1, -1, -1,
+    -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+    41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+};
+
+/* Decode base64 string to binary data
+ * Returns: number of bytes decoded, or -1 on error
+ */
+int ws_base64_decode(const char* src, int src_len, byte* dst, int dst_max)
 {
-  ctx->word = ctx->bits = 0;
-  ctx->alphabet = base64_encode_table;
-}
-
-/* Encodes a single byte. */
-size_t
-base64_encode_single(struct base64_encode_ctx *ctx,
-		     char *dst,
-		     uint8_t src)
-{
-  unsigned done = 0;
-  unsigned word = ctx->word << 8 | src;
-  unsigned bits = ctx->bits + 8;
-  
-  while (bits >= 6)
-    {
-      bits -= 6;
-      dst[done++] = ENCODE(ctx->alphabet, (word >> bits));
+    int i, j;
+    int decoded_len;
+    
+    if (!src || !dst || src_len <= 0 || dst_max <= 0) {
+        return -1;
     }
-
-  ctx->bits = bits;
-  ctx->word = word;
-
-  assert(done <= 2);
-  
-  return done;
-}
-
-/* Returns the number of output characters. DST should point to an
- * area of size at least BASE64_ENCODE_LENGTH(length). */
-size_t
-base64_encode_update(struct base64_encode_ctx *ctx,
-		     char *dst,
-		     size_t length,
-		     const uint8_t *src)
-{
-  size_t done = 0;
-  size_t left = length;
-  unsigned left_over;
-  size_t bulk;
-  
-  while (ctx->bits && left)
-    {
-      left--;
-      done += base64_encode_single(ctx, dst + done, *src++);
+    
+    /* Calculate expected output size */
+    int padding = 0;
+    if (src[src_len - 1] == '=') padding++;
+    if (src_len > 1 && src[src_len - 2] == '=') padding++;
+    decoded_len = (src_len * 3) / 4 - padding;
+    
+    if (decoded_len > dst_max) {
+        return -1; /* Output buffer too small */
     }
-  
-  left_over = left % 3;
-  bulk = left - left_over;
-  
-  if (bulk)
-    {
-      assert(!(bulk % 3));
-      
-      encode_raw(ctx->alphabet, dst + done, bulk, src);
-      done += BASE64_ENCODE_RAW_LENGTH(bulk);
-      src += bulk;
-      left = left_over;
+    
+    /* Process 4 characters at a time */
+    for (i = 0, j = 0; i < src_len; ) {
+        unsigned char a, b, c, d;
+        
+        /* Get 4 base64 characters, skip whitespace */
+        do { a = (i < src_len) ? (unsigned char)src[i++] : '='; } while (isspace(a));
+        do { b = (i < src_len) ? (unsigned char)src[i++] : '='; } while (isspace(b));
+        do { c = (i < src_len) ? (unsigned char)src[i++] : '='; } while (isspace(c));
+        do { d = (i < src_len) ? (unsigned char)src[i++] : '='; } while (isspace(d));
+        
+        /* Convert to 6-bit values */
+        int va = (a < 128) ? base64_decode_table[a] : -1;
+        int vb = (b < 128) ? base64_decode_table[b] : -1;
+        int vc = (c < 128) ? base64_decode_table[c] : -1;
+        int vd = (d < 128) ? base64_decode_table[d] : -1;
+        
+        /* Check for invalid characters */
+        if (va < 0 || vb < 0) {
+            return -1; /* Invalid base64 character */
+        }
+        
+        /* First byte */
+        if (j < dst_max) {
+            dst[j++] = (unsigned char)((va << 2) | (vb >> 4));
+        }
+        
+        /* Second byte */
+        if (vc >= 0 && j < dst_max) {
+            dst[j++] = (unsigned char)(((vb & 0x0F) << 4) | (vc >> 2));
+        }
+        
+        /* Third byte */
+        if (vd >= 0 && j < dst_max) {
+            dst[j++] = (unsigned char)(((vc & 0x03) << 6) | vd);
+        }
     }
-
-  while (left)
-    {
-      left--;
-      done += base64_encode_single(ctx, dst + done, *src++);
-    }
-
-  assert(done <= BASE64_ENCODE_LENGTH(length));
-
-  return done;
-}
-
-/* DST should point to an area of size at least
- * BASE64_ENCODE_FINAL_SIZE */
-size_t
-base64_encode_final(struct base64_encode_ctx *ctx,
-		    char *dst)
-{
-  unsigned done = 0;
-  unsigned bits = ctx->bits;
-  
-  if (bits)
-    {
-      dst[done++] = ENCODE(ctx->alphabet, (ctx->word << (6 - ctx->bits)));
-      for (; bits < 6; bits += 2)
-	dst[done++] = '=';
-
-      ctx->bits = 0;
-    }
-
-  assert(done <= BASE64_ENCODE_FINAL_LENGTH);
-  return done;
+    
+    return j;
 }

@@ -281,8 +281,7 @@ static int ws_handshake(BrokerClient* bc, MqttBroker* broker)
     
     if (rc == MQTT_CODE_SUCCESS) {
         int write_rc = broker->net.write(broker->net.ctx, bc->sock, tx_buf, tx_len, broker->timeout_ms);
-        if (write_rc > 0) {
-            WBLOG_INFO(broker, "WebSocket handshake completed on sock=%d (%d bytes sent)", (int)bc->sock, write_rc);
+        if (write_rc > 0) {            
             /* Mark handshake as done */
             ws_ctx->handshake_done = 1;
             return MQTT_CODE_SUCCESS;

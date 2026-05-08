@@ -134,3 +134,5 @@ zig-out/
 
 !libs\wslay\lib\libwslay.a
 !libs\wslay\lib\libwslay.so
+
+test_*

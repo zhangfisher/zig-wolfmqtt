@@ -126,12 +126,8 @@ if (NOT WOLFMQTT_STDINCAP)
     list(APPEND WOLFMQTT_DEFINITIONS "-DWOLFMQTT_NO_STDIN_CAP")
 endif()
 
-add_option("WOLFMQTT_V5"
-           "Enable MQTT v5.0 support"
-           "no" "yes;no")
-if (WOLFMQTT_V5)
-    list(APPEND WOLFMQTT_DEFINITIONS "-DWOLFMQTT_V5")
-endif()
+# WOLFMQTT_V5 is always enabled (MQTT v5.0 support)
+list(APPEND WOLFMQTT_DEFINITIONS "-DWOLFMQTT_V5")
 
 add_option(WOLFMQTT_DISCB
            "Enable disconnect callback"
@@ -169,12 +165,7 @@ if (WOLFMQTT_BROKER)
         list(APPEND WOLFMQTT_DEFINITIONS "-DWOLFMQTT_BROKER_NO_RETAINED")
     endif()
 
-    add_option(WOLFMQTT_BROKER_WILL
-               "Enable broker Last Will and Testament support"
-               "yes" "yes;no")
-    if (NOT WOLFMQTT_BROKER_WILL)
-        list(APPEND WOLFMQTT_DEFINITIONS "-DWOLFMQTT_BROKER_NO_WILL")
-    endif()
+    # WOLFMQTT_BROKER_WILL is always enabled (Last Will support)
 
     add_option(WOLFMQTT_BROKER_WILDCARDS
                "Enable broker wildcard topic matching"
@@ -183,11 +174,14 @@ if (WOLFMQTT_BROKER)
         list(APPEND WOLFMQTT_DEFINITIONS "-DWOLFMQTT_BROKER_NO_WILDCARDS")
     endif()
 
-    add_option(WOLFMQTT_BROKER_AUTH
-               "Enable broker username/password authentication"
+    # WOLFMQTT_BROKER_AUTH is always enabled (authentication support)
+
+    add_option(WOLFMQTT_BROKER_API
+               "Enable broker HTTP API"
                "yes" "yes;no")
-    if (NOT WOLFMQTT_BROKER_AUTH)
-        list(APPEND WOLFMQTT_DEFINITIONS "-DWOLFMQTT_BROKER_NO_AUTH")
+    if (WOLFMQTT_BROKER_API)
+        list(APPEND WOLFMQTT_DEFINITIONS "-DWOLFMQTT_BROKER_API")
+        list(APPEND MQTT_SOURCES src/mqtt_broker_api.c)
     endif()
 
     add_option(WOLFMQTT_BROKER_LOG

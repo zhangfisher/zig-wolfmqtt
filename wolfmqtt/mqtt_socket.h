@@ -47,6 +47,7 @@
 #define MQTT_DEFAULT_PORT   1883
 #define MQTT_SECURE_PORT    8883
 #define MQTT_WS_PORT        8080    /* WebSocket default port */
+#define MQTT_API_PORT       8081    /* HTTP API default port */
 
 
 struct _MqttClient;

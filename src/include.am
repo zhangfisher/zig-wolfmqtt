@@ -23,6 +23,10 @@ EXTRA_DIST +=
 if BUILD_BROKER
 bin_PROGRAMS += src/mqtt_broker
 src_mqtt_broker_SOURCES      = src/mqtt_broker.c
+# HTTP API support (enabled by default)
+if BUILD_BROKER_API
+src_mqtt_broker_SOURCES     += src/mqtt_broker_api.c
+endif
 src_mqtt_broker_CFLAGS       = $(AM_CFLAGS)
 src_mqtt_broker_CPPFLAGS     = $(AM_CPPFLAGS)
 src_mqtt_broker_LDFLAGS      = -Lsrc

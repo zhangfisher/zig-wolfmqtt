@@ -204,9 +204,7 @@ typedef struct BrokerCommandResponse {
 #ifndef WOLFMQTT_BROKER_RETAINED
     #define WOLFMQTT_BROKER_RETAINED
 #endif
-#ifndef WOLFMQTT_BROKER_WILL
-    #define WOLFMQTT_BROKER_WILL
-#endif
+/* WOLFMQTT_BROKER_WILL is always enabled */
 #ifndef WOLFMQTT_BROKER_WILDCARDS
     #define WOLFMQTT_BROKER_WILDCARDS
 #endif
@@ -225,6 +223,15 @@ typedef struct MqttBroker MqttBroker;
 #ifdef ENABLE_MQTT_WEBSOCKET
 typedef struct MqttWebSocketContext MqttWebSocketContext;
 #endif
+
+/* HTTP API context structure (always enabled) */
+typedef struct MqttBrokerApiContext {
+    MqttBroker* broker;
+    BROKER_SOCKET_T api_listen_sock;
+    word16 api_port;
+    byte use_api;
+    char api_token[64];  /* API authentication token */
+} MqttBrokerApiContext;
 
 /* -------------------------------------------------------------------------- */
 /* Broker client lifecycle callbacks (客户端生命周期回调)                      */
@@ -285,10 +292,8 @@ typedef struct BrokerClient {
 #endif
     byte    tx_buf[BROKER_TX_BUF_SZ];
     byte    rx_buf[BROKER_RX_BUF_SZ];
-#ifdef WOLFMQTT_BROKER_WILL
     char    will_topic[BROKER_MAX_TOPIC_LEN];
     byte    will_payload[BROKER_MAX_WILL_PAYLOAD_LEN];
-#endif
 #else
     char*   client_id;
 #ifdef WOLFMQTT_BROKER_AUTH
@@ -299,10 +304,8 @@ typedef struct BrokerClient {
     byte*   rx_buf;
     int     tx_buf_len;
     int     rx_buf_len;
-#ifdef WOLFMQTT_BROKER_WILL
     char*   will_topic;
     byte*   will_payload;
-#endif
     struct BrokerClient* next;
 #endif
     BROKER_SOCKET_T sock;
@@ -312,13 +315,11 @@ typedef struct BrokerClient {
     WOLFMQTT_BROKER_TIME_T last_rx;
     byte    clean_session;
     byte    connected;       /* set after successful CONNECT handshake */
-#ifdef WOLFMQTT_BROKER_WILL
     byte    has_will;
     word16  will_payload_len;
     MqttQoS will_qos;
     byte    will_retain;
     word32  will_delay_sec;     /* v5 Will Delay Interval (seconds) */
-#endif
     /* Session persistence (会话持久化 - 适用于 MQTT 3.1.1 和 MQTT 5) */
     word32  session_expiry_interval; /* Session Expiry Interval (seconds, 0 = session ends on disconnect) */
     WOLFMQTT_BROKER_TIME_T disconnect_time; /* When client disconnected (for session expiry calculation) */
@@ -411,7 +412,6 @@ typedef struct BrokerRetainedMsg {
 /* -------------------------------------------------------------------------- */
 /* Pending will messages (v5 Will Delay Interval)                              */
 /* -------------------------------------------------------------------------- */
-#ifdef WOLFMQTT_BROKER_WILL
 typedef struct BrokerPendingWill {
 #ifdef WOLFMQTT_STATIC_MEMORY
     byte    in_use;
@@ -429,7 +429,6 @@ typedef struct BrokerPendingWill {
     byte    retain;
     WOLFMQTT_BROKER_TIME_T publish_time; /* absolute time to publish */
 } BrokerPendingWill;
-#endif /* WOLFMQTT_BROKER_WILL */
 
 /* -------------------------------------------------------------------------- */
 /* Broker context                                                              */
@@ -440,10 +439,8 @@ typedef struct MqttBroker {
     int     running;
     byte    log_level;         /* 日志级别 */
     MqttBrokerLogCb log;       /* 日志回调函数 (NULL则使用默认输出) */
-#ifdef WOLFMQTT_BROKER_AUTH
     const char* username;  /* Authentication username (NULL = no auth) */
     const char* password;  /* Authentication password (NULL = no auth) */
-#endif
     MqttBrokerNet net;
     word16  next_packet_id;
 
@@ -468,11 +465,9 @@ typedef struct MqttBroker {
     word16 max_payload_len;     /* 消息负载最大大小(字节) */
     word16 max_will_payload_len;/* 遗嘱消息负载最大大小(字节) */
 
-#ifdef WOLFMQTT_V5
     /* MQTT 5 Flow control settings (MQTT 5 流控设置) */
     word32 max_packet_size;     /* Broker最大包大小(0=无限制) */
     word16 topic_alias_max;     /* Broker主题别名最大值 */
-#endif
     /* Session persistence defaults (会话持久化默认值) */
     word32 default_session_expiry_interval; /* 默认会话过期间隔(秒), 当客户端未指定Session Expiry Interval且clean=0时使用 */
     /* Statistics settings (统计设置) */
@@ -489,30 +484,14 @@ typedef struct MqttBroker {
     byte         tls_version;  /* 0=auto (v23), 12=TLS 1.2, 13=TLS 1.3 */
     byte         tls_ctx_owned; /* 1 if BrokerTls_Init created tls_ctx */
 #endif
-#ifdef ENABLE_MQTT_WEBSOCKET
     BROKER_SOCKET_T listen_sock_ws; /* WebSocket 监听套接字 */
     word16          port_ws;        /* WebSocket 端口 (默认 8080) */
     byte            use_ws;         /* 是否启用 WebSocket */
-#endif
-#ifdef WOLFMQTT_STATIC_MEMORY
-    BrokerClient clients[BROKER_MAX_CLIENTS];
-    BrokerSub    subs[BROKER_MAX_SUBS];
-#ifdef WOLFMQTT_BROKER_RETAINED
-    BrokerRetainedMsg retained[BROKER_MAX_RETAINED];
-#endif
-#ifdef WOLFMQTT_BROKER_WILL
-    BrokerPendingWill pending_wills[BROKER_MAX_PENDING_WILLS];
-#endif
-#else
+    /* Dynamic memory allocation (always used) */
     BrokerClient* clients;
     BrokerSub*    subs;
-#ifdef WOLFMQTT_BROKER_RETAINED
     BrokerRetainedMsg* retained;
-#endif
-#ifdef WOLFMQTT_BROKER_WILL
     BrokerPendingWill* pending_wills;
-#endif
-#endif
     BrokerStats stats;          /* 统计数据 */
     byte enable_stats;          /* 统计功能启用标志 */
     WOLFMQTT_BROKER_TIME_T last_stats_time; /* 上次发送统计消息的时间 */
@@ -520,6 +499,12 @@ typedef struct MqttBroker {
     /* 连接/断开回调 (可选) */
     MqttBrokerConnectCb    on_connect;
     MqttBrokerDisconnectCb on_disconnect;
+    
+    byte enable_api;                /* Enable HTTP API (default: 1) */
+    word16 api_port;                /* HTTP API server port (default: 8081) */
+    /* HTTP API support (always enabled) */
+    MqttBrokerApiContext* api_ctx;  /* HTTP API context */
+    char api_token[64];             /* API authentication token */
 } MqttBroker;
 
 /* -------------------------------------------------------------------------- */
@@ -554,6 +539,14 @@ WOLFMQTT_API int MqttBroker_Free(MqttBroker* broker);
  * For embedded systems that use a cooperative main loop with Step(). */
 WOLFMQTT_API int MqttBroker_Start(MqttBroker* broker);
 
+/* Publish message from external source (e.g., HTTP API) */
+WOLFMQTT_API int BrokerPublish_Message(MqttBroker* broker, const char* topic,
+                                       const byte* payload, word16 payload_len,
+                                       MqttQoS qos, byte retain);
+
+/* Kick/disconnect a client by client_id or IP address */
+WOLFMQTT_API int BrokerKick_Client(MqttBroker* broker, const char* client_identifier);
+
 #ifdef ENABLE_MQTT_WEBSOCKET
 /* Start WebSocket listener on specified port */
 WOLFMQTT_API int MqttBroker_StartWebSocket(MqttBroker* broker, word16 port);
@@ -574,6 +567,19 @@ WOLFMQTT_API int MqttBrokerNet_Init(MqttBrokerNet* net);
 
 /* CLI wrapper interface */
 WOLFMQTT_API int wolfmqtt_broker(int argc, char** argv);
+
+/* Broker HTTP API functions (always enabled) */
+/* Initialize the broker HTTP API */
+WOLFMQTT_API int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* api_ctx, word16 port);
+
+/* Set API authentication token */
+WOLFMQTT_API int MqttBrokerApi_SetToken(MqttBrokerApiContext* api_ctx, const char* token);
+
+/* Process API events (should be called from main broker loop) */
+WOLFMQTT_API int MqttBrokerApi_Process(MqttBrokerApiContext* api_ctx);
+
+/* Cleanup API resources */
+WOLFMQTT_API void MqttBrokerApi_Free(MqttBrokerApiContext* api_ctx);
 
 #endif /* WOLFMQTT_BROKER */
 
