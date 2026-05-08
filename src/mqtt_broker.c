@@ -26,6 +26,7 @@
 
 #include "wolfmqtt/mqtt_types.h"
 #include "wolfmqtt/mqtt_broker.h"
+#include "wolfmqtt/mqtt_broker_logger.h"
 #include "wolfmqtt/mqtt_broker_transport.h"
 #include "wolfmqtt/mqtt_client.h"
 #include "wolfmqtt/mqtt_packet.h"
@@ -64,6 +65,12 @@
 #endif
 
 /* -------------------------------------------------------------------------- */
+/* Forward declarations                                                        */
+/* -------------------------------------------------------------------------- */
+static void BrokerPublish_ClientStatus(MqttBroker* broker, BrokerClient* bc, 
+                                       const char* status_topic);
+
+/* -------------------------------------------------------------------------- */
 /* Default time abstraction                                                    */
 /* -------------------------------------------------------------------------- */
 #ifndef WOLFMQTT_BROKER_GET_TIME_S
@@ -95,23 +102,20 @@
     #endif
 #endif
 
-/* Logging macros with level filtering and customizable callback. */
-#include <stdarg.h>
-
-static inline void broker_log(MqttBroker* b, LogLevel level, const char* format, ...) {
-    if (b->log_level >= level) {
-        va_list args;
-        va_start(args, format);
-        b->log(level, format, args);
-        va_end(args);
-    }
-}
-
-#define WBLOG_DBG(b, ...)   broker_log(b, LOG_LEVEL_DEBUG, __VA_ARGS__)
-#define WBLOG_INFO(b, ...)  broker_log(b, LOG_LEVEL_INFO, __VA_ARGS__)
-#define WBLOG_WARN(b, ...)  broker_log(b, LOG_LEVEL_WARN, __VA_ARGS__)
-#define WBLOG_ERR(b, ...)   broker_log(b, LOG_LEVEL_ERROR, __VA_ARGS__)
-#define WBLOG_FATAL(b, ...) broker_log(b, LOG_LEVEL_FATAL, __VA_ARGS__)
+/* -------------------------------------------------------------------------- */
+/* Default time abstraction                                                    */
+/* -------------------------------------------------------------------------- */
+#ifndef WOLFMQTT_BROKER_GET_TIME_S
+    #if defined(WOLFMQTT_WOLFIP)
+        /* wolfIP has no default time source. Define
+         * WOLFMQTT_BROKER_GET_TIME_S in user_settings.h to provide one.
+         * Example: #define WOLFMQTT_BROKER_GET_TIME_S() myGetTimeSec() */
+        #error "WOLFMQTT_WOLFIP requires WOLFMQTT_BROKER_GET_TIME_S to be defined"
+    #else
+        #define WOLFMQTT_BROKER_GET_TIME_S() \
+            ((WOLFMQTT_BROKER_TIME_T)time(NULL))
+    #endif
+#endif
 
 /* Buffer size accessors - unify static/dynamic code paths */
 #ifdef WOLFMQTT_STATIC_MEMORY
@@ -276,6 +280,104 @@ static inline void BrokerSafeFree(void** ptr, size_t size, int sensitive) {
 /* Magic number constants */
 #define BROKER_MAX_PROP_CHAIN_LENGTH 200
 #define BROKER_MAX_PAYLOAD_PREVIEW 128
+
+/* -------------------------------------------------------------------------- */
+/* Zero-copy Memory Pool Implementation (零拷贝内存池实现)                     */
+/* -------------------------------------------------------------------------- */
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+
+/* Initialize the message pool (初始化消息池) */
+static void BrokerMsgPool_Init(MqttBroker* broker)
+{
+    if (broker == NULL) return;
+    XMEMSET(&broker->msg_pool, 0, sizeof(BrokerMsgPool));
+    WBLOG_INFO(broker, "Zero-copy message pool initialized: %d buffers x %d bytes",
+        BROKER_MSG_POOL_SIZE, BROKER_MSG_MAX_SIZE);
+}
+
+/* Allocate a buffer from the pool (从池中分配缓冲区) */
+static byte* BrokerMsgPool_Alloc(MqttBroker* broker, word32 size, word32* out_index)
+{
+    if (broker == NULL || out_index == NULL) return NULL;
+    if (size > BROKER_MSG_MAX_SIZE) return NULL;
+    
+    int i;
+    for (i = 0; i < BROKER_MSG_POOL_SIZE; i++) {
+        if (!broker->msg_pool.in_use[i]) {
+            broker->msg_pool.in_use[i] = 1;
+            broker->msg_pool.ref_counts[i] = 1;
+            broker->msg_pool.alloc_count++;
+            *out_index = (word32)i;
+            return broker->msg_pool.buffers[i];
+        }
+    }
+    
+    /* Pool exhausted */
+    WBLOG_WARN(broker, "Message pool exhausted (alloc #%u)", 
+        (unsigned)broker->msg_pool.alloc_count);
+    return NULL;
+}
+
+/* Release a buffer back to the pool (释放缓冲区回池) */
+static void BrokerMsgPool_Free(MqttBroker* broker, word32 index)
+{
+    if (broker == NULL || index >= BROKER_MSG_POOL_SIZE) return;
+    
+    if (broker->msg_pool.ref_counts[index] > 0) {
+        broker->msg_pool.ref_counts[index]--;
+        if (broker->msg_pool.ref_counts[index] == 0) {
+            broker->msg_pool.in_use[index] = 0;
+            broker->msg_pool.reuse_count++;
+        }
+    }
+}
+
+/* Add reference to a pooled buffer (增加池缓冲区的引用计数) */
+static void BrokerMsgPool_AddRef(MqttBroker* broker, word32 index)
+{
+    if (broker == NULL || index >= BROKER_MSG_POOL_SIZE) return;
+    if (broker->msg_pool.in_use[index]) {
+        broker->msg_pool.ref_counts[index]++;
+    }
+}
+
+/* Get current pool usage statistics (获取池使用统计) */
+static void BrokerMsgPool_GetStats(MqttBroker* broker, word32* used, word32* total)
+{
+    if (broker == NULL || used == NULL || total == NULL) return;
+    
+    *total = BROKER_MSG_POOL_SIZE;
+    *used = 0;
+    
+    int i;
+    for (i = 0; i < BROKER_MSG_POOL_SIZE; i++) {
+        if (broker->msg_pool.in_use[i]) {
+            (*used)++;
+        }
+    }
+}
+
+/* Cleanup pool (清理池 - 仅在 broker 销毁时调用) */
+static void BrokerMsgPool_Cleanup(MqttBroker* broker)
+{
+    if (broker == NULL) return;
+    
+    word32 used, total;
+    BrokerMsgPool_GetStats(broker, &used, &total);
+    
+    if (used > 0) {
+        WBLOG_WARN(broker, "Message pool cleanup: %u/%u buffers still in use",
+            (unsigned)used, (unsigned)total);
+    } else {
+        WBLOG_INFO(broker, "Message pool cleanup: all buffers freed (allocs=%u, reuses=%u)",
+            (unsigned)broker->msg_pool.alloc_count,
+            (unsigned)broker->msg_pool.reuse_count);
+    }
+    
+    XMEMSET(&broker->msg_pool, 0, sizeof(BrokerMsgPool));
+}
+
+#endif /* WOLFMQTT_BROKER_ZERO_COPY */
 
 /* Check if payload is printable text */
 static int BrokerIsPrintableText(const byte* data, word32 len) {
@@ -1517,6 +1619,9 @@ static void BrokerClient_Remove(MqttBroker* broker, BrokerClient* bc, int reason
 #endif
         WBLOG_INFO(broker, "client disconnected client_id=%s ip=%s total_clients=%d",
             BROKER_CLIENT_ID(bc), bc->client_ip, count_before - 1);
+        
+        /* Publish client disconnected status to $sys/broker/clients/disconnected */
+        BrokerPublish_ClientStatus(broker, bc, "$sys/broker/clients/disconnected");
     }
 
     /* Cleanup transport layer resources */
@@ -2083,6 +2188,44 @@ static void BrokerSubs_Remove(MqttBroker* broker, BrokerClient* bc,
 /* -------------------------------------------------------------------------- */
 /* Packet ID generation                                                        */
 /* -------------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------------- */
+/* Helper functions                                                            */
+/* -------------------------------------------------------------------------- */
+
+/* Publish client status message to $sys/broker/clients/connected or disconnected */
+static void BrokerPublish_ClientStatus(MqttBroker* broker, BrokerClient* bc, 
+                                       const char* status_topic)
+{
+    char json_msg[256];
+    const char* transport_type;
+    int json_len;
+    
+    if (broker == NULL || bc == NULL || status_topic == NULL) {
+        return;
+    }
+    
+    /* Get transport type name */
+    transport_type = BrokerTransport_GetName(bc);
+    
+    /* Build JSON message: {"id":"clientId","ip":"IP地址","type":"tcp或websocket"} */
+    json_len = XSNPRINTF(json_msg, sizeof(json_msg),
+        "{\"id\":\"%s\",\"ip\":\"%s\",\"type\":\"%s\"}",
+        BROKER_CLIENT_ID(bc),
+        bc->client_ip,
+        transport_type);
+    
+    if (json_len > 0 && json_len < (int)sizeof(json_msg)) {
+        /* Publish with QoS 0, no retain */
+        int rc = BrokerPublish_Message(broker, status_topic,
+            (const byte*)json_msg, (word16)json_len, MQTT_QOS_0, 0);
+        if (rc != MQTT_CODE_SUCCESS) {
+            WBLOG_ERR(broker, "Failed to publish client status to %s: %d",
+                status_topic, rc);
+        }
+    }
+}
+
 static word16 BrokerNextPacketId(MqttBroker* broker)
 {
     word16 id = broker->next_packet_id;
@@ -2295,17 +2438,49 @@ static int BrokerRetained_Store(MqttBroker* broker, const char* topic,
             if (tlen >= BROKER_MAX_TOPIC_LEN) {
                 rc = MQTT_CODE_ERROR_OUT_OF_BUFFER;
             }
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+            else if (payload_len > BROKER_MSG_MAX_SIZE) {
+                rc = MQTT_CODE_ERROR_OUT_OF_BUFFER;
+            }
+#else
             else if (payload_len > BROKER_MAX_PAYLOAD_LEN) {
                 rc = MQTT_CODE_ERROR_OUT_OF_BUFFER;
             }
+#endif
             if (rc == MQTT_CODE_SUCCESS) {
                 XMEMSET(msg, 0, sizeof(*msg));
                 msg->in_use = 1;
                 XMEMCPY(msg->topic, topic, (size_t)tlen);
                 msg->topic[tlen] = '\0';
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+                /* Zero-copy: allocate from pool or direct assignment */
+                if (payload_len > 0 && payload != NULL) {
+                    /* Try to allocate from pool first */
+                    word32 pool_idx = 0;
+                    byte* pool_buf = BrokerMsgPool_Alloc(broker, payload_len, &pool_idx);
+                    
+                    if (pool_buf != NULL) {
+                        /* Use pooled buffer */
+                        XMEMCPY(pool_buf, payload, payload_len);
+                        msg->payload_ref.data = pool_buf;
+                        msg->payload_ref.len = payload_len;
+                        msg->payload_ref.ref_count = 1;
+                        msg->payload_ref.is_owned = 1;
+                        msg->payload_ref.pool_index = pool_idx;
+                    } else {
+                        /* Fallback: direct pointer (caller must ensure lifetime) */
+                        msg->payload_ref.data = (byte*)payload;
+                        msg->payload_ref.len = payload_len;
+                        msg->payload_ref.ref_count = 1;
+                        msg->payload_ref.is_owned = 0;
+                        msg->payload_ref.pool_index = 0xFFFFFFFF;
+                    }
+                }
+#else
                 if (payload_len > 0 && payload != NULL) {
                     XMEMCPY(msg->payload, payload, payload_len);
                 }
+#endif
                 msg->payload_len = payload_len;
             }
         }
@@ -2322,11 +2497,22 @@ static int BrokerRetained_Store(MqttBroker* broker, const char* topic,
             cur = cur->next;
         }
         if (msg != NULL) {
-            /* Replace existing: free old payload */
+            /* Replace existing: release old payload */
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+            if (msg->payload_ref.is_owned && msg->payload_ref.pool_index != 0xFFFFFFFF) {
+                BrokerMsgPool_Free(broker, msg->payload_ref.pool_index);
+            } else if (msg->payload_ref.is_owned) {
+                WOLFMQTT_FREE(msg->payload_ref.data);
+            }
+            msg->payload_ref.data = NULL;
+            msg->payload_ref.len = 0;
+            msg->payload_ref.ref_count = 0;
+#else
             if (msg->payload) {
                 WOLFMQTT_FREE(msg->payload);
                 msg->payload = NULL;
             }
+#endif
             msg->payload_len = 0;
         }
         else {
@@ -2352,6 +2538,34 @@ static int BrokerRetained_Store(MqttBroker* broker, const char* topic,
                 is_new = 1;
             }
         }
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+        if (rc == MQTT_CODE_SUCCESS && payload_len > 0 && payload != NULL) {
+            /* Try pool allocation first */
+            word32 pool_idx = 0;
+            byte* pool_buf = BrokerMsgPool_Alloc(broker, payload_len, &pool_idx);
+            
+            if (pool_buf != NULL) {
+                XMEMCPY(pool_buf, payload, payload_len);
+                msg->payload_ref.data = pool_buf;
+                msg->payload_ref.len = payload_len;
+                msg->payload_ref.ref_count = 1;
+                msg->payload_ref.is_owned = 1;
+                msg->payload_ref.pool_index = pool_idx;
+            } else {
+                /* Fallback: malloc */
+                msg->payload_ref.data = (byte*)WOLFMQTT_MALLOC(payload_len);
+                if (msg->payload_ref.data == NULL) {
+                    rc = MQTT_CODE_ERROR_MEMORY;
+                } else {
+                    XMEMCPY(msg->payload_ref.data, payload, payload_len);
+                    msg->payload_ref.len = payload_len;
+                    msg->payload_ref.ref_count = 1;
+                    msg->payload_ref.is_owned = 1;
+                    msg->payload_ref.pool_index = 0xFFFFFFFF;
+                }
+            }
+        }
+#else
         if (rc == MQTT_CODE_SUCCESS && payload_len > 0 && payload != NULL) {
             msg->payload = (byte*)WOLFMQTT_MALLOC(payload_len);
             if (msg->payload == NULL) {
@@ -2361,6 +2575,7 @@ static int BrokerRetained_Store(MqttBroker* broker, const char* topic,
                 XMEMCPY(msg->payload, payload, payload_len);
             }
         }
+#endif
         if (rc == MQTT_CODE_SUCCESS) {
             msg->payload_len = payload_len;
             if (is_new) {
@@ -2376,6 +2591,19 @@ static int BrokerRetained_Store(MqttBroker* broker, const char* topic,
             if (msg->topic) {
                 WOLFMQTT_FREE(msg->topic);
             }
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+            if (msg->payload_ref.is_owned && msg->payload_ref.data) {
+                if (msg->payload_ref.pool_index != 0xFFFFFFFF) {
+                    BrokerMsgPool_Free(broker, msg->payload_ref.pool_index);
+                } else {
+                    WOLFMQTT_FREE(msg->payload_ref.data);
+                }
+            }
+#else
+            if (msg->payload) {
+                WOLFMQTT_FREE(msg->payload);
+            }
+#endif
             WOLFMQTT_FREE(msg);
         }
     }
@@ -2400,6 +2628,16 @@ static void BrokerRetained_Delete(MqttBroker* broker, const char* topic)
         for (i = 0; i < broker->max_retained; i++) {
             if (broker->retained[i].in_use &&
                 XSTRCMP(broker->retained[i].topic, topic) == 0) {
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+                /* Release payload reference */
+                if (broker->retained[i].payload_ref.is_owned) {
+                    if (broker->retained[i].payload_ref.pool_index != 0xFFFFFFFF) {
+                        BrokerMsgPool_Free(broker, broker->retained[i].payload_ref.pool_index);
+                    } else {
+                        WOLFMQTT_FREE(broker->retained[i].payload_ref.data);
+                    }
+                }
+#endif
                 XMEMSET(&broker->retained[i], 0, sizeof(BrokerRetainedMsg));
                 /* 删除保留消息，更新统计 */
                 if (broker->enable_stats && broker->stats.retained > 0) {
@@ -2423,9 +2661,20 @@ static void BrokerRetained_Delete(MqttBroker* broker, const char* topic)
                     broker->retained = next;
                 }
                 WOLFMQTT_FREE(cur->topic);
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+                /* Release payload reference */
+                if (cur->payload_ref.is_owned) {
+                    if (cur->payload_ref.pool_index != 0xFFFFFFFF) {
+                        BrokerMsgPool_Free(broker, cur->payload_ref.pool_index);
+                    } else {
+                        WOLFMQTT_FREE(cur->payload_ref.data);
+                    }
+                }
+#else
                 if (cur->payload) {
                     WOLFMQTT_FREE(cur->payload);
                 }
+#endif
                 WOLFMQTT_FREE(cur);
                 /* 删除保留消息，更新统计 */
                 if (broker->enable_stats && broker->stats.retained > 0) {
@@ -2446,6 +2695,16 @@ static void BrokerRetained_FreeAll(MqttBroker* broker)
     {
         int i;
         for (i = 0; i < broker->max_retained; i++) {
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+            /* Release payload reference */
+            if (broker->retained[i].payload_ref.is_owned) {
+                if (broker->retained[i].payload_ref.pool_index != 0xFFFFFFFF) {
+                    BrokerMsgPool_Free(broker, broker->retained[i].payload_ref.pool_index);
+                } else {
+                    WOLFMQTT_FREE(broker->retained[i].payload_ref.data);
+                }
+            }
+#endif
             XMEMSET(&broker->retained[i], 0, sizeof(BrokerRetainedMsg));
         }
     }
@@ -2457,9 +2716,19 @@ static void BrokerRetained_FreeAll(MqttBroker* broker)
             if (cur->topic) {
                 WOLFMQTT_FREE(cur->topic);
             }
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+            if (cur->payload_ref.is_owned) {
+                if (cur->payload_ref.pool_index != 0xFFFFFFFF) {
+                    BrokerMsgPool_Free(broker, cur->payload_ref.pool_index);
+                } else {
+                    WOLFMQTT_FREE(cur->payload_ref.data);
+                }
+            }
+#else
             if (cur->payload) {
                 WOLFMQTT_FREE(cur->payload);
             }
+#endif
             WOLFMQTT_FREE(cur);
             cur = next;
         }
@@ -2842,7 +3111,11 @@ static void BrokerRetained_DeliverToClient(MqttBroker* broker,
                 out_pub.retain = 1;  /* Non-v5: always send with retain=1 */
 #endif
                 out_pub.duplicate = 0;
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+                out_pub.buffer = (rm->payload_len > 0) ? rm->payload_ref.data : NULL;
+#else
                 out_pub.buffer = (rm->payload_len > 0) ? rm->payload : NULL;
+#endif
                 out_pub.total_len = rm->payload_len;
 #ifdef WOLFMQTT_V5
                 out_pub.protocol_level = bc->protocol_level;
@@ -2871,7 +3144,17 @@ static void BrokerRetained_DeliverToClient(MqttBroker* broker,
                     broker->retained = rm_next;
                 }
                 if (rm->topic) WOLFMQTT_FREE(rm->topic);
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+                if (rm->payload_ref.is_owned) {
+                    if (rm->payload_ref.pool_index != 0xFFFFFFFF) {
+                        BrokerMsgPool_Free(broker, rm->payload_ref.pool_index);
+                    } else {
+                        WOLFMQTT_FREE(rm->payload_ref.data);
+                    }
+                }
+#else
                 if (rm->payload) WOLFMQTT_FREE(rm->payload);
+#endif
                 WOLFMQTT_FREE(rm);
                 rm = rm_next;
                 continue;
@@ -2902,7 +3185,11 @@ static void BrokerRetained_DeliverToClient(MqttBroker* broker,
                 out_pub.retain = 1;  /* Non-v5: always send with retain=1 */
 #endif
                 out_pub.duplicate = 0;
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+                out_pub.buffer = (rm->payload_len > 0) ? rm->payload_ref.data : NULL;
+#else
                 out_pub.buffer = (rm->payload_len > 0) ? rm->payload : NULL;
+#endif
                 out_pub.total_len = rm->payload_len;
 #ifdef WOLFMQTT_V5
                 out_pub.protocol_level = bc->protocol_level;
@@ -3965,8 +4252,6 @@ static int BrokerHandle_Subscribe(BrokerClient* bc, int rx_len,
         WBLOG_ERR(broker, "SUBSCRIBE decode failed rc=%d", rc);
         return rc;
     }
-    WBLOG_INFO(broker, "SUBSCRIBE decoded successfully, topic_count=%d", sub.topic_count);
-
     /* Register subscriptions and build return codes */
     for (i = 0; i < sub.topic_count && i < MAX_MQTT_TOPICS; i++) {
         const char* f = sub.topics[i].topic_filter;
@@ -4765,6 +5050,10 @@ static int BrokerClient_Process(MqttBroker* broker, BrokerClient* bc)
                         bc->protocol_level, bc->clean_session, bc->will_topic != NULL ? 1 : 0,
                         count);
                 }
+                
+                /* Publish client connected status to $sys/broker/clients/connected */
+                BrokerPublish_ClientStatus(broker, bc, "$sys/broker/clients/connected");
+                
                 break;
             }
             case MQTT_PACKET_TYPE_PUBLISH:
@@ -5002,6 +5291,11 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
     broker->stats.start = WOLFMQTT_BROKER_GET_TIME_S();
     /* 设置 last_stats_time 为启动时间减去间隔，确保第一次立即发送 */
     broker->last_stats_time = broker->stats.start - broker->stats_interval;
+
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+    /* Initialize zero-copy message pool */
+    BrokerMsgPool_Init(broker);
+#endif
 
 #ifdef WOLFMQTT_BROKER_EPOLL
     /* Initialize epoll */
@@ -6162,6 +6456,11 @@ int MqttBroker_Free(MqttBroker* broker)
     /* Clean up pending wills and retained messages */
     BrokerPendingWill_FreeAll(broker);
     BrokerRetained_FreeAll(broker);
+
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+    /* Cleanup zero-copy message pool */
+    BrokerMsgPool_Cleanup(broker);
+#endif
 
     /* Clean up HTTP API */
     if (broker->api_ctx != NULL) {

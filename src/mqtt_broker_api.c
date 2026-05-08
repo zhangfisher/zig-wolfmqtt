@@ -49,7 +49,7 @@
 #endif
 
 #include "wolfmqtt/mqtt_broker.h"
-#include "wolfmqtt/logger.h"
+#include "wolfmqtt/mqtt_broker_logger.h"
 #include "wolfmqtt/mqtt_types.h"
 #include "wolfmqtt/mqtt_packet.h"
 
@@ -59,11 +59,11 @@
 #endif
 
 /* Forward declarations */
-extern int BrokerHandle_PublishMessage(MqttBroker* broker, MqttPublish* pub_msg);
+extern int BrokerPublish_Message(MqttBroker* broker, const char* topic,
+                                 const byte* payload, word16 payload_len,
+                                 MqttQoS qos, byte retain);
 
 #ifdef ENABLE_MQTT_WEBSOCKET
-/* Forward declarations */
-extern int BrokerHandle_PublishMessage(MqttBroker* broker, MqttPublish* pub_msg);
 /* Note: WebSocket client handling needs to be done through broker's public API */
 #endif
 
@@ -76,23 +76,13 @@ extern int BrokerHandle_PublishMessage(MqttBroker* broker, MqttPublish* pub_msg)
                status, method, path, ((query) && (query)[0]) ? "?" : "", \
                (query) ? (query) : "", client_ip)
 
-/* Logging macros - same as mqtt_broker.c */
+/* Backward compatibility: map BA_LOG_* to BROKER_LOG_* */
 #ifdef WOLFMQTT_BROKER_LOG
-    static inline void api_log(MqttBroker* b, LogLevel level, const char* format, ...) {
-        if (b && b->log) {
-            va_list args;
-            va_start(args, format);
-            b->log(level, format, args);
-            va_end(args);
-        }
-        (void)level;
-    }
-    
-    #define BA_LOG_DBG(b, ...)   api_log(b, LOG_LEVEL_DEBUG, __VA_ARGS__)
-    #define BA_LOG_INFO(b, ...)  api_log(b, LOG_LEVEL_INFO, __VA_ARGS__)
-    #define BA_LOG_WARN(b, ...)  api_log(b, LOG_LEVEL_WARN, __VA_ARGS__)
-    #define BA_LOG_ERR(b, ...)   api_log(b, LOG_LEVEL_ERROR, __VA_ARGS__)
-    #define BA_LOG_FATAL(b, ...) api_log(b, LOG_LEVEL_FATAL, __VA_ARGS__)
+    #define BA_LOG_DBG(b, ...)   BROKER_LOG_DBG(b, __VA_ARGS__)
+    #define BA_LOG_INFO(b, ...)  BROKER_LOG_INFO(b, __VA_ARGS__)
+    #define BA_LOG_WARN(b, ...)  BROKER_LOG_WARN(b, __VA_ARGS__)
+    #define BA_LOG_ERR(b, ...)   BROKER_LOG_ERR(b, __VA_ARGS__)
+    #define BA_LOG_FATAL(b, ...) BROKER_LOG_FATAL(b, __VA_ARGS__)
 #else
     #define BA_LOG_DBG(b, ...)
     #define BA_LOG_INFO(b, ...)
@@ -631,7 +621,7 @@ static int handle_get_clients(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T soc
                              const char* client_ip)
 {
     MqttBroker* broker = api_ctx->broker;
-    char response_body[2048];
+    char response_body[4096];
     int body_len = 0;
     int first = 1;
     
@@ -646,13 +636,20 @@ static int handle_get_clients(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T soc
         BrokerClient* bc = broker->clients;
         while (bc) {
             if (bc->connected) {
+                const char* transport_type;
+                
                 if (!first) {
                     body_len += XSNPRINTF(response_body + body_len, sizeof(response_body) - body_len, ",");
                 }
+                
+                /* Get transport type name */
+                transport_type = BrokerTransport_GetName(bc);
+                
                 body_len += XSNPRINTF(response_body + body_len, sizeof(response_body) - body_len,
-                                    "{\"id\":\"%s\",\"ip\":\"%s\"}",
+                                    "{\"id\":\"%s\",\"ip\":\"%s\",\"type\":\"%s\"}",
                                     bc->client_id ? bc->client_id : "",
-                                    bc->client_ip);
+                                    bc->client_ip,
+                                    transport_type);
                 first = 0;
             }
             bc = bc->next;
@@ -1740,4 +1737,28 @@ void MqttBrokerApi_Free(MqttBrokerApiContext* api_ctx)
     }
     
     XMEMSET(api_ctx, 0, sizeof(MqttBrokerApiContext));
+}
+
+/* Publish log message to $sys/broker/logs topic */
+int MqttBrokerApi_PublishLog(MqttBrokerApiContext* api_ctx, const char* log_msg, LogLevel level)
+{
+    MqttBroker* broker;
+    int rc;
+    
+    if (!api_ctx || !api_ctx->broker || !log_msg) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    broker = api_ctx->broker;
+    
+    /* Publish the log message using BrokerPublish_Message */
+    rc = BrokerPublish_Message(broker, "$sys/broker/logs", 
+                               (const byte*)log_msg, (word16)strlen(log_msg), 
+                               MQTT_QOS_0, 0); /* QoS 0, no retain */
+    
+    if (rc != MQTT_CODE_SUCCESS) {
+        BA_LOG_DBG(broker, "Failed to publish log to $sys/broker/logs: %d", rc);
+    }
+    
+    return rc;
 }

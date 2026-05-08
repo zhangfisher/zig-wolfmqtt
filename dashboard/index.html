@@ -1,0 +1,1877 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MQTT Broker 控制台</title>
+    <script src="mqtt.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700&family=Exo+2:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-blue: #0A3D62;
+            --secondary-blue: #1E5F8A;
+            --accent-cyan: #00F5FF;
+            --accent-glow: rgba(0, 245, 255, 0.3);
+            --data-purple: #6C5CE7;
+            --success-green: #00FF88;
+            --warning-orange: #FFA726;
+            --error-red: #FF4757;
+
+            --bg-primary: #F0F4F8;
+            --bg-secondary: #FFFFFF;
+            --bg-tertiary: #E8EDF3;
+            --text-primary: #1A1A2E;
+            --text-secondary: #4A5568;
+            --text-muted: #718096;
+            --border-color: #CBD5E0;
+            --card-shadow: 0 4px 20px rgba(10, 61, 98, 0.08);
+            --card-shadow-hover: 0 8px 30px rgba(10, 61, 98, 0.15);
+
+            --font-display: 'Orbitron', sans-serif;
+            --font-body: 'Exo 2', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        [data-theme="dark"] {
+            --bg-primary: #0A192F;
+            --bg-secondary: #112240;
+            --bg-tertiary: #1A2942;
+            --text-primary: #E8EDF3;
+            --text-secondary: #A0AEC0;
+            --text-muted: #718096;
+            --border-color: #2D3748;
+            --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            --card-shadow-hover: 0 8px 30px rgba(0, 245, 255, 0.15);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+            transition: background 0.3s ease, color 0.3s ease;
+        }
+
+        .app-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--primary-blue) 0%, var(--secondary-blue) 100%);
+            border-radius: 16px;
+            padding: 24px 32px;
+            margin-bottom: 24px;
+            box-shadow: var(--card-shadow);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%2300F5FF' fill-opacity='0.05'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+            opacity: 0.5;
+        }
+
+        .header-content {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .header-title {
+            font-family: var(--font-display);
+            font-size: 28px;
+            font-weight: 600;
+            color: #FFFFFF;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-title::before {
+            content: '⬡';
+            font-size: 32px;
+            color: var(--accent-cyan);
+            text-shadow: 0 0 10px var(--accent-cyan);
+        }
+
+        .header-nav {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .nav-item {
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            color: #FFFFFF;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: var(--font-body);
+            font-weight: 500;
+            backdrop-filter: blur(10px);
+        }
+
+        .nav-item:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 15px var(--accent-glow);
+        }
+
+        .nav-item.active {
+            background: var(--accent-cyan);
+            color: var(--primary-blue);
+            border-color: var(--accent-cyan);
+            font-weight: 600;
+        }
+
+        .header-controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .connection-btn {
+            padding: 12px 24px;
+            background: var(--success-green);
+            color: var(--primary-blue);
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: var(--font-display);
+            font-weight: 600;
+            font-size: 12px;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 255, 136, 0.3);
+        }
+
+        .connection-btn.disconnected {
+            background: var(--error-red);
+            color: #FFFFFF;
+            box-shadow: 0 4px 15px rgba(255, 71, 87, 0.3);
+        }
+
+        .connection-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 245, 255, 0.4);
+        }
+
+        .theme-toggle {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #FFFFFF;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            transition: all 0.3s ease;
+        }
+
+        .theme-toggle:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: rotate(180deg);
+        }
+
+        /* Module Container */
+        .module-container {
+            background: var(--bg-secondary);
+            border-radius: 16px;
+            padding: 32px;
+            box-shadow: var(--card-shadow);
+            min-height: 600px;
+        }
+
+        .module {
+            display: none;
+        }
+
+        .module.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 20px;
+            margin-bottom: 32px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 24px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: linear-gradient(180deg, var(--accent-cyan) 0%, var(--primary-blue) 100%);
+        }
+
+        .stat-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--card-shadow-hover);
+            border-color: var(--accent-cyan);
+        }
+
+        .stat-icon {
+            font-size: 24px;
+            margin-bottom: 12px;
+            opacity: 0.8;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+            font-family: var(--font-display);
+        }
+
+        .stat-value {
+            font-family: var(--font-display);
+            font-size: 32px;
+            font-weight: 700;
+            color: var(--text-primary);
+            background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--primary-blue) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-unit {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-left: 4px;
+        }
+
+        /* Two Column Layout */
+        .two-column {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        .panel {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            background: linear-gradient(135deg, var(--primary-blue) 0%, var(--secondary-blue) 100%);
+            padding: 16px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-title {
+            font-family: var(--font-display);
+            font-size: 14px;
+            font-weight: 600;
+            color: #FFFFFF;
+            letter-spacing: 1px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .panel-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .panel-btn {
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            padding: 6px 12px;
+            color: #FFFFFF;
+            cursor: pointer;
+            font-size: 12px;
+            font-family: var(--font-body);
+            transition: all 0.2s ease;
+        }
+
+        .panel-btn:hover {
+            background: var(--accent-cyan);
+            color: var(--primary-blue);
+            border-color: var(--accent-cyan);
+        }
+
+        .panel-content {
+            padding: 16px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        /* Scrollbar */
+        .panel-content::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .panel-content::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 4px;
+        }
+
+        .panel-content::-webkit-scrollbar-thumb {
+            background: var(--secondary-blue);
+            border-radius: 4px;
+        }
+
+        .panel-content::-webkit-scrollbar-thumb:hover {
+            background: var(--primary-blue);
+        }
+
+        /* Log Items */
+        .log-item {
+            padding: 12px;
+            margin-bottom: 8px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border-left: 3px solid var(--accent-cyan);
+            font-family: var(--font-mono);
+            font-size: 12px;
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+        }
+
+        .log-time {
+            color: var(--text-muted);
+            font-size: 11px;
+            min-width: 80px;
+        }
+
+        .log-message {
+            color: var(--text-primary);
+            flex: 1;
+            word-break: break-word;
+        }
+
+        /* Client List */
+        .client-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            margin-bottom: 8px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border-left: 3px solid var(--success-green);
+            transition: all 0.2s ease;
+        }
+
+        .client-item:hover {
+            border-left-color: var(--accent-cyan);
+            transform: translateX(4px);
+        }
+
+        .client-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-blue) 0%, var(--secondary-blue) 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+        }
+
+        .client-info {
+            flex: 1;
+        }
+
+        .client-id {
+            font-family: var(--font-mono);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .client-details {
+            display: flex;
+            gap: 12px;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .client-type {
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: var(--bg-tertiary);
+            font-weight: 500;
+        }
+
+        .client-type.tcp {
+            color: var(--accent-cyan);
+        }
+
+        .client-type.websocket {
+            color: var(--data-purple);
+        }
+
+        /* Message Module */
+        .message-container {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            gap: 24px;
+            height: 500px;
+        }
+
+        .subscribe-panel {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .subscribe-header {
+            background: linear-gradient(135deg, var(--primary-blue) 0%, var(--secondary-blue) 100%);
+            padding: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .subscribe-title {
+            font-family: var(--font-display);
+            font-size: 14px;
+            font-weight: 600;
+            color: #FFFFFF;
+        }
+
+        .add-sub-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--accent-cyan);
+            border: none;
+            color: var(--primary-blue);
+            font-size: 18px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .add-sub-btn:hover {
+            transform: rotate(90deg);
+            box-shadow: 0 0 10px var(--accent-glow);
+        }
+
+        .subscribe-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+        }
+
+        .subscribe-item {
+            padding: 12px;
+            margin-bottom: 8px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border-left: 3px solid var(--border-color);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .subscribe-item:hover {
+            border-left-color: var(--accent-cyan);
+        }
+
+        .subscribe-item.active {
+            border-left-color: var(--accent-cyan);
+            background: linear-gradient(135deg, rgba(0, 245, 255, 0.1) 0%, transparent 100%);
+        }
+
+        .subscribe-topic {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+            word-break: break-all;
+        }
+
+        .subscribe-qos {
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        .message-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .message-list {
+            flex: 1;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px;
+            overflow-y: auto;
+        }
+
+        .message-item {
+            margin-bottom: 16px;
+            display: flex;
+            gap: 12px;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        .message-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--data-purple) 0%, var(--primary-blue) 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            flex-shrink: 0;
+            font-family: var(--font-display);
+            font-weight: 600;
+            color: #FFFFFF;
+        }
+
+        .message-content {
+            flex: 1;
+        }
+
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .message-topic {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--accent-cyan);
+        }
+
+        .message-time {
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        .message-body {
+            background: var(--bg-secondary);
+            padding: 12px;
+            border-radius: 8px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--text-primary);
+            word-break: break-word;
+            border: 1px solid var(--border-color);
+        }
+
+        .message-body.hex {
+            color: var(--accent-cyan);
+        }
+
+        .publish-area {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .publish-form {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .form-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .form-input, .form-select {
+            padding: 10px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-family: var(--font-body);
+            font-size: 13px;
+            transition: all 0.2s ease;
+        }
+
+        .form-input:focus, .form-select:focus {
+            outline: none;
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .form-textarea {
+            width: 100%;
+            min-height: 80px;
+            padding: 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 12px;
+            resize: vertical;
+            transition: all 0.2s ease;
+        }
+
+        .form-textarea:focus {
+            outline: none;
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .publish-btn {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--primary-blue) 100%);
+            border: none;
+            border-radius: 8px;
+            color: #FFFFFF;
+            font-family: var(--font-display);
+            font-weight: 600;
+            font-size: 13px;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            align-self: flex-start;
+        }
+
+        .publish-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px var(--accent-glow);
+        }
+
+        /* Config Module */
+        .config-container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .config-form {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+
+        .config-full {
+            grid-column: 1 / -1;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-muted);
+        }
+
+        .empty-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .empty-text {
+            font-size: 14px;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .two-column {
+                grid-template-columns: 1fr;
+            }
+
+            .message-container {
+                grid-template-columns: 1fr;
+            }
+
+            .subscribe-panel {
+                max-height: 200px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .header-nav {
+                justify-content: center;
+            }
+
+            .header-controls {
+                justify-content: center;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .config-form {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Status Indicator */
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success-green);
+            box-shadow: 0 0 10px var(--success-green);
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.disconnected {
+            background: var(--error-red);
+            box-shadow: 0 0 10px var(--error-red);
+            animation: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal {
+            background: var(--bg-secondary);
+            border-radius: 16px;
+            padding: 32px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            animation: modalIn 0.3s ease;
+        }
+
+        @keyframes modalIn {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        .modal-title {
+            font-family: var(--font-display);
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 24px;
+            color: var(--text-primary);
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            margin-top: 24px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-family: var(--font-body);
+            font-weight: 500;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--primary-blue) 100%);
+            color: #FFFFFF;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px var(--accent-glow);
+        }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover {
+            background: var(--border-color);
+        }
+
+        /* Number animation */
+        .stat-value.animating {
+            animation: numberPop 0.3s ease;
+        }
+
+        @keyframes numberPop {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
+        /* Connection status in header */
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .connection-status-text {
+            color: #FFFFFF;
+            font-size: 12px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="header-title">Broker 控制台</h1>
+                <nav class="header-nav">
+                    <div class="nav-item active" data-module="home">首页</div>
+                    <div class="nav-item" data-module="messages">消息</div>
+                    <div class="nav-item" data-module="logs">日志</div>
+                    <div class="nav-item" data-module="config">配置</div>
+                </nav>
+                <div class="header-controls">
+                    <div class="connection-status">
+                        <div class="status-dot" id="statusDot"></div>
+                        <span class="connection-status-text" id="connectionStatus">连接中...</span>
+                    </div>
+                    <button class="connection-btn" id="connectionBtn">断开</button>
+                    <button class="theme-toggle" id="themeToggle">☀</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="module-container">
+            <!-- Home Module -->
+            <div class="module active" id="homeModule">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">🔗</div>
+                        <div class="stat-label">活跃连接</div>
+                        <div class="stat-value" id="statConns">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📥</div>
+                        <div class="stat-label">接收消息</div>
+                        <div class="stat-value" id="statRxMsgs">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📤</div>
+                        <div class="stat-label">发送消息</div>
+                        <div class="stat-value" id="statTxMsgs">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">💾</div>
+                        <div class="stat-label">保留消息</div>
+                        <div class="stat-value" id="statRetained">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📊</div>
+                        <div class="stat-label">接收字节</div>
+                        <div class="stat-value"><span id="statRxBytes">0</span><span class="stat-unit">B</span></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📈</div>
+                        <div class="stat-label">发送字节</div>
+                        <div class="stat-value"><span id="statTxBytes">0</span><span class="stat-unit">B</span></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📋</div>
+                        <div class="stat-label">活跃订阅</div>
+                        <div class="stat-value" id="statSubs">0</div>
+                    </div>
+                </div>
+
+                <div class="two-column">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div class="panel-title">📜 Broker 日志</div>
+                            <div class="panel-actions">
+                                <button class="panel-btn" id="clearLogsBtn">清空</button>
+                            </div>
+                        </div>
+                        <div class="panel-content" id="logsPanel">
+                            <div class="empty-state">
+                                <div class="empty-icon">📭</div>
+                                <div class="empty-text">暂无日志</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div class="panel-title">👥 客户端列表</div>
+                            <div class="panel-actions">
+                                <button class="panel-btn" id="refreshClientsBtn">刷新</button>
+                                <button class="panel-btn" id="kickAllBtn">踢掉</button>
+                            </div>
+                        </div>
+                        <div class="panel-content" id="clientsPanel">
+                            <div class="empty-state">
+                                <div class="empty-icon">🔌</div>
+                                <div class="empty-text">暂无客户端</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Messages Module -->
+            <div class="module" id="messagesModule">
+                <div class="message-container">
+                    <div class="subscribe-panel">
+                        <div class="subscribe-header">
+                            <div class="subscribe-title">订阅列表</div>
+                            <button class="add-sub-btn" id="addSubBtn">+</button>
+                        </div>
+                        <div class="subscribe-list" id="subscribeList">
+                            <div class="empty-state">
+                                <div class="empty-icon">📭</div>
+                                <div class="empty-text">暂无订阅</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="message-panel">
+                        <div class="message-list" id="messageList">
+                            <div class="empty-state">
+                                <div class="empty-icon">💬</div>
+                                <div class="empty-text">暂无消息</div>
+                            </div>
+                        </div>
+
+                        <div class="publish-area">
+                            <div class="publish-form">
+                                <div class="form-group">
+                                    <label class="form-label">主题</label>
+                                    <input type="text" class="form-input" id="publishTopic" placeholder="输入主题..." list="topicHistory">
+                                    <datalist id="topicHistory"></datalist>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">QoS</label>
+                                    <select class="form-select" id="publishQos">
+                                        <option value="0">0</option>
+                                        <option value="1">1</option>
+                                        <option value="2">2</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">格式</label>
+                                    <select class="form-select" id="publishFormat">
+                                        <option value="text">文本</option>
+                                        <option value="json">JSON</option>
+                                        <option value="hex">十六进制</option>
+                                        <option value="base64">Base64</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">保留</label>
+                                    <select class="form-select" id="publishRetain">
+                                        <option value="false">否</option>
+                                        <option value="true">是</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <textarea class="form-textarea" id="publishPayload" placeholder="输入消息内容..."></textarea>
+                            <div style="margin-top: 12px;">
+                                <button class="publish-btn" id="publishBtn">发布消息</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Module -->
+            <div class="module" id="logsModule">
+                <div class="panel">
+                    <div class="panel-header">
+                        <div class="panel-title">📜 系统日志</div>
+                        <div class="panel-actions">
+                            <button class="panel-btn" id="clearSystemLogsBtn">清空</button>
+                        </div>
+                    </div>
+                    <div class="panel-content" id="systemLogsPanel" style="max-height: 600px;">
+                        <div class="empty-state">
+                            <div class="empty-icon">📭</div>
+                            <div class="empty-text">暂无日志</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Config Module -->
+            <div class="module" id="configModule">
+                <div class="config-container">
+                    <div class="config-form" id="configForm">
+                        <!-- Config items will be loaded dynamically -->
+                    </div>
+                    <div style="margin-top: 24px;">
+                        <button class="publish-btn" id="saveConfigBtn">保存配置</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Add Subscription Modal -->
+    <div class="modal-overlay" id="addSubModal">
+        <div class="modal">
+            <div class="modal-title">添加订阅</div>
+            <div class="form-group" style="margin-bottom: 16px;">
+                <label class="form-label">主题</label>
+                <input type="text" class="form-input" id="subTopicInput" placeholder="例如: test/topic/#">
+            </div>
+            <div class="form-group" style="margin-bottom: 16px;">
+                <label class="form-label">QoS</label>
+                <select class="form-select" id="subQosInput">
+                    <option value="0">0</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                </select>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="cancelSubBtn">取消</button>
+                <button class="btn btn-primary" id="confirmSubBtn">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== Configuration ====================
+        const CONFIG = {
+            brokerUrl: 'ws://192.168.116.217:8080/mqtt',
+            apiUrl: 'http://192.168.116.217:8080',
+            username: 'admin',
+            password: '22182666',
+            autoConnect: true
+        };
+
+        // ==================== State ====================
+        let state = {
+            connected: false,
+            mqttClient: null,
+            currentModule: 'home',
+            theme: 'light',
+            stats: {},
+            logs: [],
+            clients: new Map(),
+            subscriptions: [],
+            messages: [],
+            config: {},
+            topicHistory: new Set()
+        };
+
+        // ==================== Utility Functions ====================
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString('zh-CN', { hour12: false });
+        }
+
+        function toHex(bytes) {
+            return Array.from(new Uint8Array(bytes))
+                .map(b => b.toString(16).padStart(2, '0'))
+                .join(' ');
+        }
+
+        function getAuthHeader() {
+            const credentials = btoa(`${CONFIG.username}:${CONFIG.password}`);
+            return `Basic ${credentials}`;
+        }
+
+        // ==================== MQTT Client ====================
+        function initMqttClient() {
+            const clientId = 'dashboard_' + Math.random().toString(16).substr(2, 8);
+            state.mqttClient = mqtt.connect(CONFIG.brokerUrl, {
+                clientId: clientId,
+                username: CONFIG.username,
+                password: CONFIG.password,
+                clean: true,
+                connectTimeout: 10000,
+                reconnectPeriod: 5000
+            });
+
+            state.mqttClient.on('connect', () => {
+                console.log('MQTT connected');
+                state.connected = true;
+                updateConnectionUI();
+                subscribeToSystemTopics();
+            });
+
+            state.mqttClient.on('close', () => {
+                console.log('MQTT disconnected');
+                state.connected = false;
+                updateConnectionUI();
+            });
+
+            state.mqttClient.on('error', (err) => {
+                console.error('MQTT error:', err);
+            });
+
+            state.mqttClient.on('message', (topic, message) => {
+                handleMessage(topic, message);
+            });
+        }
+
+        function subscribeToSystemTopics() {
+            if (!state.mqttClient || !state.connected) return;
+
+            // Subscribe to system topics
+            const systemTopics = [
+                { topic: '$sys/broker/stats', qos: 0 },
+                { topic: '$sys/broker/logs', qos: 0 },
+                { topic: '$sys/broker/clients/connected', qos: 0 },
+                { topic: '$sys/broker/clients/disconnected', qos: 0 }
+            ];
+
+            systemTopics.forEach(({ topic, qos }) => {
+                state.mqttClient.subscribe(topic, { qos }, (err) => {
+                    if (err) {
+                        console.error(`Failed to subscribe to ${topic}:`, err);
+                    }
+                });
+            });
+
+            // Re-subscribe to user subscriptions
+            state.subscriptions.forEach(({ topic, qos }) => {
+                state.mqttClient.subscribe(topic, { qos }, (err) => {
+                    if (err) {
+                        console.error(`Failed to re-subscribe to ${topic}:`, err);
+                    }
+                });
+            });
+        }
+
+        function handleMessage(topic, message) {
+            try {
+                if (topic === '$sys/broker/stats') {
+                    const stats = JSON.parse(message.toString());
+                    updateStats(stats);
+                } else if (topic === '$sys/broker/logs') {
+                    const log = message.toString();
+                    addLog(log);
+                    addSystemLog(log);
+                } else if (topic === '$sys/broker/clients/connected') {
+                    const client = JSON.parse(message.toString());
+                    client.connected = true;
+                    state.clients.set(client.id, client);
+                    updateClientsList();
+                } else if (topic === '$sys/broker/clients/disconnected') {
+                    const client = JSON.parse(message.toString());
+                    state.clients.delete(client.id);
+                    updateClientsList();
+                } else {
+                    // User subscription message
+                    const activeSub = state.subscriptions.find(s => topic.match(s.topic.replace('+', '[^/]+').replace('#', '.*')));
+                    if (activeSub || state.subscriptions.some(s => s.topic === topic)) {
+                        addMessage(topic, message);
+                    }
+                }
+            } catch (err) {
+                console.error('Error handling message:', err);
+            }
+        }
+
+        // ==================== Stats ====================
+        function updateStats(stats) {
+            state.stats = stats;
+
+            const statsMap = {
+                conns: 'statConns',
+                rx_msgs: 'statRxMsgs',
+                tx_msgs: 'statTxMsgs',
+                retained: 'statRetained',
+                rx_bytes: 'statRxBytes',
+                tx_bytes: 'statTxBytes',
+                subs: 'statSubs'
+            };
+
+            for (const [key, elemId] of Object.entries(statsMap)) {
+                const elem = document.getElementById(elemId);
+                if (elem && stats[key] !== undefined) {
+                    const oldValue = parseInt(elem.textContent.replace(/[^\d]/g, '')) || 0;
+                    const newValue = stats[key];
+
+                    if (elemId.includes('Bytes')) {
+                        elem.textContent = formatBytes(newValue);
+                    } else {
+                        elem.textContent = newValue.toLocaleString();
+                    }
+
+                    if (oldValue !== newValue) {
+                        elem.classList.add('animating');
+                        setTimeout(() => elem.classList.remove('animating'), 300);
+                    }
+                }
+            }
+        }
+
+        // ==================== Logs ====================
+        function addLog(message) {
+            state.logs.unshift({
+                time: Date.now(),
+                message: message
+            });
+
+            // Keep only last 200 logs
+            if (state.logs.length > 200) {
+                state.logs = state.logs.slice(0, 200);
+            }
+
+            updateLogsPanel();
+        }
+
+        function updateLogsPanel() {
+            const panel = document.getElementById('logsPanel');
+            if (state.logs.length === 0) {
+                panel.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-text">暂无日志</div>
+                    </div>
+                `;
+                return;
+            }
+
+            panel.innerHTML = state.logs.map(log => `
+                <div class="log-item">
+                    <div class="log-time">${formatTime(log.time)}</div>
+                    <div class="log-message">${log.message}</div>
+                </div>
+            `).join('');
+        }
+
+        function clearLogs() {
+            state.logs = [];
+            updateLogsPanel();
+        }
+
+        function addSystemLog(message) {
+            // System logs are the same as broker logs in this implementation
+            // We'll use the same data source
+        }
+
+        function clearSystemLogs() {
+            clearLogs();
+        }
+
+        // ==================== Clients ====================
+        function updateClientsList() {
+            const panel = document.getElementById('clientsPanel');
+            const clients = Array.from(state.clients.values());
+
+            if (clients.length === 0) {
+                panel.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">🔌</div>
+                        <div class="empty-text">暂无客户端</div>
+                    </div>
+                `;
+                return;
+            }
+
+            panel.innerHTML = clients.map(client => `
+                <div class="client-item">
+                    <div class="client-icon">📱</div>
+                    <div class="client-info">
+                        <div class="client-id">${client.id}</div>
+                        <div class="client-details">
+                            <span>${client.ip}</span>
+                            <span class="client-type ${client.type}">${client.type.toUpperCase()}</span>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function refreshClients() {
+            try {
+                const response = await fetch(`${CONFIG.apiUrl}/api/clients`, {
+                    headers: {
+                        'Authorization': getAuthHeader()
+                    }
+                });
+
+                if (response.ok) {
+                    const clients = await response.json();
+                    state.clients.clear();
+                    clients.forEach(client => {
+                        client.connected = true;
+                        state.clients.set(client.id, client);
+                    });
+                    updateClientsList();
+                }
+            } catch (err) {
+                console.error('Failed to refresh clients:', err);
+            }
+        }
+
+        async function kickAllClients() {
+            const clients = Array.from(state.clients.values());
+
+            for (const client of clients) {
+                try {
+                    await fetch(`${CONFIG.apiUrl}/api/kick/${client.id}`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': getAuthHeader()
+                        }
+                    });
+                } catch (err) {
+                    console.error(`Failed to kick client ${client.id}:`, err);
+                }
+            }
+        }
+
+        // ==================== Subscriptions ====================
+        function addSubscription(topic, qos) {
+            const exists = state.subscriptions.find(s => s.topic === topic);
+            if (exists) return;
+
+            state.subscriptions.push({ topic, qos, active: true });
+
+            if (state.mqttClient && state.connected) {
+                state.mqttClient.subscribe(topic, { qos }, (err) => {
+                    if (err) {
+                        console.error(`Failed to subscribe to ${topic}:`, err);
+                    }
+                });
+            }
+
+            updateSubscriptionsList();
+        }
+
+        function removeSubscription(topic) {
+            const index = state.subscriptions.findIndex(s => s.topic === topic);
+            if (index === -1) return;
+
+            state.subscriptions.splice(index, 1);
+
+            if (state.mqttClient && state.connected) {
+                state.mqttClient.unsubscribe(topic, (err) => {
+                    if (err) {
+                        console.error(`Failed to unsubscribe from ${topic}:`, err);
+                    }
+                });
+            }
+
+            updateSubscriptionsList();
+        }
+
+        function toggleSubscription(topic) {
+            const sub = state.subscriptions.find(s => s.topic === topic);
+            if (sub) {
+                sub.active = !sub.active;
+                updateSubscriptionsList();
+                filterMessages();
+            }
+        }
+
+        function updateSubscriptionsList() {
+            const list = document.getElementById('subscribeList');
+
+            if (state.subscriptions.length === 0) {
+                list.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-text">暂无订阅</div>
+                    </div>
+                `;
+                return;
+            }
+
+            list.innerHTML = state.subscriptions.map(sub => `
+                <div class="subscribe-item ${sub.active ? 'active' : ''}" data-topic="${sub.topic}">
+                    <div class="subscribe-topic">${sub.topic}</div>
+                    <div class="subscribe-qos">QoS: ${sub.qos}</div>
+                </div>
+            `).join('');
+
+            // Add click handlers
+            list.querySelectorAll('.subscribe-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    const topic = item.dataset.topic;
+                    toggleSubscription(topic);
+                });
+
+                item.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    const topic = item.dataset.topic;
+                    removeSubscription(topic);
+                });
+            });
+        }
+
+        // ==================== Messages ====================
+        function addMessage(topic, message) {
+            state.messages.unshift({
+                topic,
+                message: message.toString(),
+                time: Date.now(),
+                isBinary: !/^[ -~\t\n\r]+$/.test(message.toString())
+            });
+
+            // Keep only last 100 messages
+            if (state.messages.length > 100) {
+                state.messages = state.messages.slice(0, 100);
+            }
+
+            filterMessages();
+        }
+
+        function filterMessages() {
+            const activeSubs = state.subscriptions.filter(s => s.active);
+            const list = document.getElementById('messageList');
+
+            let filteredMessages = state.messages;
+
+            if (activeSubs.length > 0) {
+                filteredMessages = state.messages.filter(msg => {
+                    return activeSubs.some(sub => msg.topic.match(sub.topic.replace('+', '[^/]+').replace('#', '.*')));
+                });
+            }
+
+            if (filteredMessages.length === 0) {
+                list.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">💬</div>
+                        <div class="empty-text">暂无消息</div>
+                    </div>
+                `;
+                return;
+            }
+
+            list.innerHTML = filteredMessages.map(msg => {
+                let displayMessage = msg.message;
+                let isHex = false;
+
+                if (msg.isBinary) {
+                    displayMessage = toHex(new TextEncoder().encode(msg.message));
+                    isHex = true;
+                }
+
+                return `
+                    <div class="message-item">
+                        <div class="message-avatar">${msg.topic.split('/').pop().substring(0, 2).toUpperCase()}</div>
+                        <div class="message-content">
+                            <div class="message-header">
+                                <div class="message-topic">${msg.topic}</div>
+                                <div class="message-time">${formatTime(msg.time)}</div>
+                            </div>
+                            <div class="message-body ${isHex ? 'hex' : ''}">${displayMessage}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function publishMessage() {
+            const topic = document.getElementById('publishTopic').value.trim();
+            const qos = parseInt(document.getElementById('publishQos').value);
+            const format = document.getElementById('publishFormat').value;
+            const retain = document.getElementById('publishRetain').value === 'true';
+            let payload = document.getElementById('publishPayload').value;
+
+            if (!topic) {
+                alert('请输入主题');
+                return;
+            }
+
+            // Add to history
+            state.topicHistory.add(topic);
+            updateTopicHistory();
+
+            // Format conversion
+            switch (format) {
+                case 'json':
+                    try {
+                        JSON.parse(payload);
+                    } catch {
+                        alert('无效的JSON格式');
+                        return;
+                    }
+                    break;
+                case 'hex':
+                    payload = 'base64:' + btoa(String.fromCharCode.apply(null,
+                        payload.split(/\s+/).map(b => parseInt(b, 16))
+                    ));
+                    break;
+                case 'base64':
+                    payload = 'base64:' + payload;
+                    break;
+            }
+
+            try {
+                const url = `${CONFIG.apiUrl}/api/publish/${encodeURIComponent(topic)}?qos=${qos}&retain=${retain}`;
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': getAuthHeader(),
+                        'Content-Type': 'text/plain'
+                    },
+                    body: payload
+                });
+
+                if (response.ok) {
+                    document.getElementById('publishPayload').value = '';
+                } else {
+                    alert('发布失败');
+                }
+            } catch (err) {
+                console.error('Failed to publish:', err);
+                alert('发布失败');
+            }
+        }
+
+        function updateTopicHistory() {
+            const datalist = document.getElementById('topicHistory');
+            datalist.innerHTML = Array.from(state.topicHistory).map(topic =>
+                `<option value="${topic}">`
+            ).join('');
+        }
+
+        // ==================== Config ====================
+        async function loadConfig() {
+            try {
+                const response = await fetch(`${CONFIG.apiUrl}/api/configs`, {
+                    headers: {
+                        'Authorization': getAuthHeader()
+                    }
+                });
+
+                if (response.ok) {
+                    const config = await response.json();
+                    state.config = config;
+                    renderConfigForm(config);
+                }
+            } catch (err) {
+                console.error('Failed to load config:', err);
+            }
+        }
+
+        function renderConfigForm(config) {
+            const form = document.getElementById('configForm');
+            const configItems = [
+                { key: 'log_level', label: '日志级别', type: 'number', min: 0, max: 4 },
+                { key: 'stats_interval', label: '统计间隔(秒)', type: 'number', min: 1 },
+                { key: 'enable_stats', label: '启用统计', type: 'checkbox' },
+                { key: 'enable_api', label: '启用API', type: 'checkbox' },
+                { key: 'port', label: 'MQTT端口', type: 'number', min: 1024, max: 65535 },
+                { key: 'api_port', label: 'API端口', type: 'number', min: 1024, max: 65535 },
+                { key: 'timeout_ms', label: '超时时间(ms)', type: 'number', min: 1000 },
+                { key: 'max_clients', label: '最大客户端数', type: 'number', min: 0, full: true },
+                { key: 'max_subs', label: '最大订阅数', type: 'number', min: 0 },
+                { key: 'max_retained', label: '最大保留消息', type: 'number', min: 0 },
+                { key: 'rx_buf_sz', label: '接收缓冲区', type: 'number', min: 512, full: true },
+                { key: 'tx_buf_sz', label: '发送缓冲区', type: 'number', min: 512, full: true },
+                { key: 'max_payload_len', label: '最大负载长度', type: 'number', min: 128, full: true },
+                { key: 'use_tls', label: '启用TLS', type: 'checkbox' },
+                { key: 'use_ws', label: '启用WebSocket', type: 'checkbox' },
+                { key: 'username', label: '用户名', type: 'text', full: true },
+                { key: 'password', label: '密码', type: 'password', full: true },
+                { key: 'api_token', label: 'API Token', type: 'text', full: true }
+            ];
+
+            form.innerHTML = configItems.map(item => {
+                const value = config[item.key];
+                const fullWidth = item.full ? 'config-full' : '';
+
+                let inputHtml = '';
+                if (item.type === 'checkbox') {
+                    inputHtml = `
+                        <input type="checkbox"
+                               id="config_${item.key}"
+                               data-key="${item.key}"
+                               ${value ? 'checked' : ''}>
+                    `;
+                } else {
+                    inputHtml = `
+                        <input type="${item.type}"
+                               class="form-input"
+                               id="config_${item.key}"
+                               data-key="${item.key}"
+                               value="${value !== undefined ? value : ''}"
+                               ${item.min !== undefined ? `min="${item.min}"` : ''}
+                               ${item.max !== undefined ? `max="${item.max}"` : ''}>
+                    `;
+                }
+
+                return `
+                    <div class="form-group ${fullWidth}">
+                        <label class="form-label">${item.label}</label>
+                        ${inputHtml}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function saveConfig() {
+            const form = document.getElementById('configForm');
+            const inputs = form.querySelectorAll('[data-key]');
+            const formData = new URLSearchParams();
+
+            inputs.forEach(input => {
+                const key = input.dataset.key;
+                let value = input.type === 'checkbox' ? input.checked : input.value;
+
+                if (input.type === 'number') {
+                    value = parseInt(value) || 0;
+                }
+
+                formData.append(key, value);
+            });
+
+            try {
+                const response = await fetch(`${CONFIG.apiUrl}/api/configs`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': getAuthHeader(),
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: formData.toString()
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    if (result.success) {
+                        alert('配置保存成功');
+                        loadConfig();
+                    } else {
+                        alert(`保存失败: ${result.message || '未知错误'}`);
+                    }
+                } else {
+                    alert('保存失败');
+                }
+            } catch (err) {
+                console.error('Failed to save config:', err);
+                alert('保存失败');
+            }
+        }
+
+        // ==================== UI Functions ====================
+        function updateConnectionUI() {
+            const dot = document.getElementById('statusDot');
+            const status = document.getElementById('connectionStatus');
+            const btn = document.getElementById('connectionBtn');
+
+            if (state.connected) {
+                dot.classList.remove('disconnected');
+                status.textContent = '已连接';
+                btn.textContent = '断开';
+                btn.classList.remove('disconnected');
+            } else {
+                dot.classList.add('disconnected');
+                status.textContent = '已断开';
+                btn.textContent = '连接';
+                btn.classList.add('disconnected');
+            }
+        }
+
+        function toggleConnection() {
+            if (state.connected) {
+                if (state.mqttClient) {
+                    state.mqttClient.end();
+                }
+            } else {
+                initMqttClient();
+            }
+        }
+
+        function switchModule(moduleName) {
+            state.currentModule = moduleName;
+
+            // Update nav items
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.module === moduleName);
+            });
+
+            // Update modules
+            document.querySelectorAll('.module').forEach(module => {
+                module.classList.toggle('active', module.id === `${moduleName}Module`);
+            });
+
+            // Load config when switching to config module
+            if (moduleName === 'config') {
+                loadConfig();
+            }
+        }
+
+        function toggleTheme() {
+            state.theme = state.theme === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', state.theme);
+            document.getElementById('themeToggle').textContent = state.theme === 'light' ? '☀' : '🌙';
+        }
+
+        // ==================== Modal Functions ====================
+        function showAddSubModal() {
+            document.getElementById('addSubModal').classList.add('active');
+            document.getElementById('subTopicInput').focus();
+        }
+
+        function hideAddSubModal() {
+            document.getElementById('addSubModal').classList.remove('active');
+            document.getElementById('subTopicInput').value = '';
+            document.getElementById('subQosInput').value = '0';
+        }
+
+        function confirmAddSubscription() {
+            const topic = document.getElementById('subTopicInput').value.trim();
+            const qos = parseInt(document.getElementById('subQosInput').value);
+
+            if (!topic) {
+                alert('请输入主题');
+                return;
+            }
+
+            addSubscription(topic, qos);
+            hideAddSubModal();
+        }
+
+        // ==================== Event Listeners ====================
+        document.addEventListener('DOMContentLoaded', () => {
+            // Navigation
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.addEventListener('click', () => switchModule(item.dataset.module));
+            });
+
+            // Connection
+            document.getElementById('connectionBtn').addEventListener('click', toggleConnection);
+            document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+
+            // Home module
+            document.getElementById('clearLogsBtn').addEventListener('click', clearLogs);
+            document.getElementById('refreshClientsBtn').addEventListener('click', refreshClients);
+            document.getElementById('kickAllBtn').addEventListener('click', kickAllClients);
+
+            // Messages module
+            document.getElementById('addSubBtn').addEventListener('click', showAddSubModal);
+            document.getElementById('publishBtn').addEventListener('click', publishMessage);
+
+            // Logs module
+            document.getElementById('clearSystemLogsBtn').addEventListener('click', clearSystemLogs);
+
+            // Config module
+            document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
+
+            // Modal
+            document.getElementById('cancelSubBtn').addEventListener('click', hideAddSubModal);
+            document.getElementById('confirmSubBtn').addEventListener('click', confirmAddSubscription);
+            document.getElementById('addSubModal').addEventListener('click', (e) => {
+                if (e.target.id === 'addSubModal') hideAddSubModal();
+            });
+
+            // Initialize
+            if (CONFIG.autoConnect) {
+                initMqttClient();
+            }
+
+            // Initial client load
+            refreshClients();
+        });
+    </script>
+</body>
+</html>

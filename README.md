@@ -429,6 +429,7 @@ wolfMQTT includes a lightweight MQTT broker implementation suitable for embedded
 * Keep-alive monitoring with automatic client disconnect
 * Unique client ID enforcement (existing session takeover)
 * Static memory mode (`WOLFMQTT_STATIC_MEMORY`) for zero-malloc operation
+* **Zero-copy message pool** - Optimized retained message storage with reference counting (experimental, see [docs/ZERO_COPY_QUICKSTART.md](docs/ZERO_COPY_QUICKSTART.md))
 
 ### Building
 

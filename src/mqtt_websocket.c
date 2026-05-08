@@ -18,6 +18,7 @@
 #include "wolfmqtt/mqtt_broker.h"
 #include "wolfmqtt/mqtt_websocket.h"
 #include "wolfmqtt/mqtt_socket.h"
+#include "wolfmqtt/logger.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,16 @@
 #include <errno.h>
 
 #ifdef ENABLE_MQTT_WEBSOCKET
+
+/* WebSocket logging macros - use generic logger */
+#define WS_LOG_ERR(...)   Log_Output(LOG_LEVEL_ERROR, __VA_ARGS__)
+#define WS_LOG_WARN(...)  Log_Output(LOG_LEVEL_WARN, __VA_ARGS__)
+#define WS_LOG_INFO(...)  Log_Output(LOG_LEVEL_INFO, __VA_ARGS__)
+#ifdef WOLFMQTT_DEBUG_WEBSOCKET
+    #define WS_LOG_DBG(...) Log_Output(LOG_LEVEL_DEBUG, __VA_ARGS__)
+#else
+    #define WS_LOG_DBG(...)
+#endif
 
 /* Platform-specific sleep function */
 #if defined(_WIN32) || defined(_WIN64)
@@ -442,8 +453,8 @@ int MqttWebSocket_Recv(MqttWebSocketContext* ws_ctx)
     
     /* Check payload length */
     if (hdr.payload_len > ws_ctx->recv_capacity) {
-        fprintf(stderr, "[WS ERROR] Payload too large: %llu\n", 
-                (unsigned long long)hdr.payload_len);
+        WS_LOG_ERR("Payload too large: %llu\n", 
+                   (unsigned long long)hdr.payload_len);
         return MQTT_CODE_ERROR_OUT_OF_BUFFER;
     }
     

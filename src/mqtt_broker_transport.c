@@ -25,26 +25,10 @@
 
 #include "wolfmqtt/mqtt_broker_transport.h"
 #include "wolfmqtt/mqtt_broker.h"
-#include "wolfmqtt/logger.h"
+#include "wolfmqtt/mqtt_broker_logger.h"
 #include "wolfmqtt/mqtt_types.h"
 
 #ifdef WOLFMQTT_BROKER
-
-/* Broker logging macros - use printf for simplicity */
-#ifdef WOLFMQTT_BROKER_LOG
-    #include <stdio.h>
-    #define WBLOG_DBG(b, ...)   fprintf(stderr, "[DEBUG] " __VA_ARGS__); fprintf(stderr, "\n")
-    #define WBLOG_INFO(b, ...)  fprintf(stderr, "[INFO] " __VA_ARGS__); fprintf(stderr, "\n")
-    #define WBLOG_WARN(b, ...)  fprintf(stderr, "[WARN] " __VA_ARGS__); fprintf(stderr, "\n")
-    #define WBLOG_ERR(b, ...)   fprintf(stderr, "[ERROR] " __VA_ARGS__); fprintf(stderr, "\n")
-    #define WBLOG_FATAL(b, ...) fprintf(stderr, "[FATAL] " __VA_ARGS__); fprintf(stderr, "\n")
-#else
-    #define WBLOG_DBG(b, ...)
-    #define WBLOG_INFO(b, ...)
-    #define WBLOG_WARN(b, ...)
-    #define WBLOG_ERR(b, ...)
-    #define WBLOG_FATAL(b, ...)
-#endif
 
 #ifdef ENABLE_MQTT_WEBSOCKET
     #include "wolfmqtt/mqtt_websocket.h"

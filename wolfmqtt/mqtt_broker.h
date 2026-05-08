@@ -128,6 +128,23 @@ typedef void (*MqttBrokerLogCb)(LogLevel level, const char* format, va_list args
 #endif
 
 /* -------------------------------------------------------------------------- */
+/* Zero-copy memory pool configuration (零拷贝内存池配置)                      */
+/* -------------------------------------------------------------------------- */
+#ifndef WOLFMQTT_BROKER_ZERO_COPY
+    /* Default: disabled for minimal binary size. Enable via build options. */
+    /* #define WOLFMQTT_BROKER_ZERO_COPY */
+#endif
+
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+    #ifndef BROKER_MSG_POOL_SIZE
+        #define BROKER_MSG_POOL_SIZE 64      /* Number of pooled buffers */
+    #endif
+    #ifndef BROKER_MSG_MAX_SIZE
+        #define BROKER_MSG_MAX_SIZE 4096     /* Max size per buffer (bytes) */
+    #endif
+#endif
+
+/* -------------------------------------------------------------------------- */
 /* Topic Alias limits (主题别名限制)                                            */
 /* -------------------------------------------------------------------------- */
 #ifndef BROKER_MAX_TOPIC_ALIASES
@@ -411,10 +428,18 @@ typedef struct BrokerRetainedMsg {
 #ifdef WOLFMQTT_STATIC_MEMORY
     byte    in_use;
     char    topic[BROKER_MAX_TOPIC_LEN];
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+    BrokerPayloadRef payload_ref;  /* Reference-counted payload */
+#else
     byte    payload[BROKER_MAX_PAYLOAD_LEN];
+#endif
 #else
     char*   topic;
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+    BrokerPayloadRef payload_ref;  /* Reference-counted payload */
+#else
     byte*   payload;
+#endif
     struct BrokerRetainedMsg* next;
 #endif
     word32  payload_len;
@@ -444,6 +469,41 @@ typedef struct BrokerPendingWill {
     byte    retain;
     WOLFMQTT_BROKER_TIME_T publish_time; /* absolute time to publish */
 } BrokerPendingWill;
+
+/* -------------------------------------------------------------------------- */
+/* Zero-copy message pool structures (零拷贝消息池结构)                        */
+/* -------------------------------------------------------------------------- */
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+
+/* Reference-counted payload buffer (引用计数的 payload 缓冲区) */
+typedef struct BrokerPayloadRef {
+    byte*   data;              /* Payload data pointer */
+    word32  len;               /* Payload length */
+    word32  ref_count;         /* Reference count */
+    byte    is_owned;          /* 1 if this struct owns the data */
+    word32  pool_index;        /* Index in memory pool (if pooled) */
+} BrokerPayloadRef;
+
+/* Pre-encoded message for zero-copy distribution (预编码消息用于零拷贝分发) */
+typedef struct BrokerEncodedMsg {
+    byte*   encoded_data;      /* Pre-encoded MQTT message */
+    word32  encoded_len;       /* Length of encoded message */
+    word32  ref_count;         /* Reference count */
+    WOLFMQTT_BROKER_TIME_T create_time;  /* Creation timestamp */
+    byte    is_pooled;         /* 1 if from memory pool */
+    word32  pool_index;        /* Pool index if pooled */
+} BrokerEncodedMsg;
+
+/* Memory pool for message buffers (消息缓冲区内存池) */
+typedef struct BrokerMsgPool {
+    byte    buffers[BROKER_MSG_POOL_SIZE][BROKER_MSG_MAX_SIZE];
+    byte    in_use[BROKER_MSG_POOL_SIZE];
+    word32  ref_counts[BROKER_MSG_POOL_SIZE];
+    word32  alloc_count;       /* Total allocations (for stats) */
+    word32  reuse_count;       /* Total reuses (for stats) */
+} BrokerMsgPool;
+
+#endif /* WOLFMQTT_BROKER_ZERO_COPY */
 
 /* -------------------------------------------------------------------------- */
 /* Broker context                                                              */
@@ -516,6 +576,10 @@ typedef struct MqttBroker {
     BrokerStats stats;          /* 统计数据 */
     byte enable_stats;          /* 统计功能启用标志 */
     WOLFMQTT_BROKER_TIME_T last_stats_time; /* 上次发送统计消息的时间 */
+
+#ifdef WOLFMQTT_BROKER_ZERO_COPY
+    BrokerMsgPool msg_pool;     /* Zero-copy message pool */
+#endif
 
     /* 连接/断开回调 (可选) */
     MqttBrokerConnectCb    on_connect;
@@ -606,6 +670,9 @@ WOLFMQTT_API int MqttBrokerApi_Process(MqttBrokerApiContext* api_ctx);
 
 /* Cleanup API resources */
 WOLFMQTT_API void MqttBrokerApi_Free(MqttBrokerApiContext* api_ctx);
+
+/* Publish log message to $sys/broker/logs topic (QoS=0, retain=false) */
+WOLFMQTT_API int MqttBrokerApi_PublishLog(MqttBrokerApiContext* api_ctx, const char* log_msg, LogLevel level);
 
 #ifdef WOLFMQTT_BROKER_EPOLL
 /* Set epoll max events (must be called before MqttBroker_Start) */
