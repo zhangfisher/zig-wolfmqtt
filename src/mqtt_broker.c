@@ -1842,6 +1842,7 @@ static int BrokerSubs_Add(MqttBroker* broker, BrokerClient* bc,
     const char* filter, word16 filter_len, MqttQoS qos
 #ifdef WOLFMQTT_V5
     , byte no_local, byte rap, byte retain_handling
+    , word32 subscription_id, byte has_subscription_id
 #endif
     )
 {
@@ -1907,6 +1908,11 @@ static int BrokerSubs_Add(MqttBroker* broker, BrokerClient* bc,
                 broker->subs[i].retain_handling = retain_handling;
                 broker->subs[i].no_local = no_local;
                 broker->subs[i].rap = rap;
+                /* Update subscription identifier if present */
+                if (has_subscription_id) {
+                    broker->subs[i].subscription_id = subscription_id;
+                    broker->subs[i].has_subscription_id = 1;
+                }
 #endif
                 return MQTT_CODE_SUCCESS;  /* Existing subscription updated */
             }
@@ -1939,6 +1945,11 @@ static int BrokerSubs_Add(MqttBroker* broker, BrokerClient* bc,
                 cur->retain_handling = retain_handling;
                 cur->no_local = no_local;
                 cur->rap = rap;
+                /* Update subscription identifier if present */
+                if (has_subscription_id) {
+                    cur->subscription_id = subscription_id;
+                    cur->has_subscription_id = 1;
+                }
 #endif
                 return MQTT_CODE_SUCCESS;  /* Existing subscription updated */
             }
@@ -2010,6 +2021,15 @@ static int BrokerSubs_Add(MqttBroker* broker, BrokerClient* bc,
         /* Store session expiry interval from client */
         sub->session_expiry_interval = bc->session_expiry_interval;
         sub->disconnect_time = 0; /* Active connection, no disconnect time */
+
+        /* Initialize subscription identifier (MQTT 5.0) */
+        if (has_subscription_id) {
+            sub->subscription_id = subscription_id;
+            sub->has_subscription_id = 1;
+        } else {
+            sub->subscription_id = 0;
+            sub->has_subscription_id = 0;
+        }
 
         /* 初始化共享订阅字段 */
         sub->is_shared = is_shared;
@@ -3059,7 +3079,7 @@ static int BrokerPendingWill_Process(MqttBroker* broker)
 static void BrokerRetained_DeliverToClient(MqttBroker* broker,
     BrokerClient* bc, const char* filter, MqttQoS sub_qos
 #ifdef WOLFMQTT_V5
-    , byte retain_handling, byte rap
+    , byte retain_handling, byte rap, word32 subscription_id, byte has_subscription_id
 #endif
     )
 {
@@ -3119,6 +3139,14 @@ static void BrokerRetained_DeliverToClient(MqttBroker* broker,
                 out_pub.total_len = rm->payload_len;
 #ifdef WOLFMQTT_V5
                 out_pub.protocol_level = bc->protocol_level;
+                /* Add Subscription Identifier if this subscription has one (MQTT 5.0) */
+                if (has_subscription_id && bc->protocol_level >= MQTT_CONNECT_PROTOCOL_LEVEL_5) {
+                    MqttProp* sub_id_prop = MqttProps_Add(&out_pub.props);
+                    if (sub_id_prop != NULL) {
+                        sub_id_prop->type = MQTT_PROP_SUBSCRIPTION_ID;
+                        sub_id_prop->data_int = subscription_id;
+                    }
+                }
 #endif
                 enc_rc = MqttEncode_Publish(bc->tx_buf,
                     BROKER_CLIENT_TX_SZ(bc), &out_pub, 0);
@@ -4262,6 +4290,18 @@ static int BrokerHandle_Subscribe(BrokerClient* bc, int rx_len,
         byte no_local = sub.topics[i].no_local;
         byte rap = sub.topics[i].rap;
         byte retain_handling = sub.topics[i].retain_handling;
+        
+        /* Extract Subscription Identifier from SUBSCRIBE properties (MQTT 5.0) */
+        word32 subscription_id = 0;
+        byte has_subscription_id = 0;
+        if (sub.props != NULL && bc->protocol_level >= MQTT_CONNECT_PROTOCOL_LEVEL_5) {
+            MqttProp* prop = BrokerProps_Find(broker, sub.props, MQTT_PROP_SUBSCRIPTION_ID);
+            if (prop != NULL) {
+                subscription_id = prop->data_int;
+                has_subscription_id = 1;
+                WBLOG_DBG(broker, "SUBSCRIBE: Found subscription_id=%u", subscription_id);
+            }
+        }
 #else
         byte no_local = 0;
         byte rap = 0;
@@ -4278,7 +4318,7 @@ static int BrokerHandle_Subscribe(BrokerClient* bc, int rx_len,
                 &flen, MQTT_DATA_LEN_SIZE) == MQTT_DATA_LEN_SIZE) {
             int sub_rc = BrokerSubs_Add(broker, bc, f, flen, topic_qos
 #ifdef WOLFMQTT_V5
-                , no_local, rap, retain_handling
+                , no_local, rap, retain_handling, subscription_id, has_subscription_id
 #endif
                 );
             int is_new_sub = (sub_rc == MQTT_CODE_CONTINUE);
@@ -4305,7 +4345,7 @@ WBLOG_DBG(broker, "SUBSCRIBE: Skip retained (existing sub, rh=2)");
                     BrokerRetained_DeliverToClient(broker, bc, filter_z,
                         topic_qos
 #ifdef WOLFMQTT_V5
-                        , retain_handling, rap
+                        , retain_handling, rap, subscription_id, has_subscription_id
 #endif
                         );
                 }
@@ -4752,6 +4792,17 @@ static int BrokerHandle_Publish(BrokerClient* bc, int rx_len,
                             }
                             if (prop_count >= 100) {
                                 WBLOG_ERR(broker, "PUBLISH property list corrupted (circular or too many props)");
+                            }
+                        }
+                        
+                        /* Add Subscription Identifier if this subscription has one (MQTT 5.0) */
+                        if (sub->has_subscription_id) {
+                            MqttProp* sub_id_prop = MqttProps_Add(&out_pub.props);
+                            if (sub_id_prop != NULL) {
+                                sub_id_prop->type = MQTT_PROP_SUBSCRIPTION_ID;
+                                sub_id_prop->data_int = sub->subscription_id;
+                                WBLOG_DBG(broker, "PUBLISH: Added subscription_id=%u for client %s",
+                                    sub->subscription_id, BROKER_CLIENT_ID(sub->client));
                             }
                         }
                     }

@@ -409,6 +409,10 @@ typedef struct BrokerSub {
     byte    no_local;            /* v5 No Local: 1=Don't receive own messages, 0=Receive all */
     byte    rap;                  /* v5 Retain As Published: 1=Keep original retain flag */
 
+    /* MQTT 5.0 Subscription Identifier (订阅标识符) */
+    word32  subscription_id;      /* Subscription Identifier value */
+    byte    has_subscription_id;  /* Flag: 1=has valid subscription_id, 0=no subscription_id */
+
     /* 共享订阅字段 (Shared Subscription) */
     byte    is_shared;           /* 是否为共享订阅 */
     byte    rr_index;            /* 轮询索引 (Round-Robin index) */
