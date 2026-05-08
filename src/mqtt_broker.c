@@ -4810,12 +4810,14 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
     broker->use_ws = 1;              /* Enable WebSocket by default */
 #endif
     broker->api_ctx = NULL;          /* API context allocated on start */
-    broker->enable_api = 1;          /* Enable HTTP API by default */
+    broker->enable_http = 1;         /* Enable HTTP server by default */
     broker->api_port = MQTT_API_PORT; /* Default API port: 8081 */
     
-    /* Set default API token */
-    XSTRNCPY(broker->api_token, "22182666", sizeof(broker->api_token) - 1);
-    broker->api_token[sizeof(broker->api_token) - 1] = '\0';
+    /* Set default HTTP Basic authentication credentials */
+    XSTRNCPY(broker->http_username, "admin", sizeof(broker->http_username) - 1);
+    broker->http_username[sizeof(broker->http_username) - 1] = '\0';
+    XSTRNCPY(broker->http_password, "22182666", sizeof(broker->http_password) - 1);
+    broker->http_password[sizeof(broker->http_password) - 1] = '\0';
     
     broker->running = 0;
     broker->log_level = LOG_LEVEL_WARN; /* Default to WARN level */
@@ -4855,6 +4857,9 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
     /* 统计设置 */
     broker->stats_interval = 20; /* 20 seconds */
     broker->enable_stats = 1;
+
+    /* 静态文件目录默认值 */
+    broker->static_dir = NULL;  /* NULL means use "./www" as default */
 
     /* 初始化统计数据 */
     broker->stats.start = WOLFMQTT_BROKER_GET_TIME_S();
@@ -5752,7 +5757,7 @@ int MqttBroker_Start(MqttBroker* broker)
 #endif
 
     /* Start HTTP API listener if enabled */
-    if (broker->enable_api && broker->api_port > 0) {
+    if (broker->enable_http && broker->api_port > 0) {
         /* Allocate API context if not already allocated */
         if (broker->api_ctx == NULL) {
             broker->api_ctx = (MqttBrokerApiContext*)WOLFMQTT_MALLOC(sizeof(MqttBrokerApiContext));

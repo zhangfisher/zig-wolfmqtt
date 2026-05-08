@@ -30,6 +30,14 @@
 #include <stddef.h> /* for offsetof */
 #include <limits.h> /* for ULONG_MAX */
 
+#ifdef _WIN32
+    #include <io.h>
+    #define access _access
+    #define F_OK 0
+#else
+    #include <unistd.h>
+#endif
+
 #ifdef WOLFMQTT_BROKER
 #if defined(WOLFMQTT_WOLFIP)
     #include "wolfip.h"
@@ -129,6 +137,7 @@ static int strnicmp(const char* s1, const char* s2, size_t n) {
 /* Content type */
 #define CONTENT_TYPE_JSON       "Content-Type: application/json\r\n"
 #define CONTENT_TYPE_TEXT       "Content-Type: text/plain\r\n"
+#define WWW_AUTHENTICATE_BASIC  "WWW-Authenticate: Basic realm=\"wolfMQTT Broker\"\r\n"
 #define CONNECTION_CLOSE        "Connection: close\r\n\r\n"
 
 /* HTTP constants */
@@ -137,13 +146,47 @@ static int strnicmp(const char* s1, const char* s2, size_t n) {
 #define HTTP_MAX_PATH_LEN       256
 #define HTTP_MAX_QUERY_LEN      128
 #define HTTP_BUFFER_SIZE        8192
+#define STATIC_FILE_BUF_SIZE    4096
 
-/* Helper function to send HTTP response */
-static int http_send_response(MqttBroker* broker, BROKER_SOCKET_T sock, 
-                              const char* status_line, const char* content_type,
-                              const char* body, int body_len)
+/* MIME type mapping table */
+typedef struct {
+    const char* extension;
+    const char* mime_type;
+} MimeTypeMap;
+
+static const MimeTypeMap mime_type_table[] = {
+    {".html", "text/html"},
+    {".htm",  "text/html"},
+    {".css",  "text/css"},
+    {".js",   "application/javascript"},
+    {".json", "application/json"},
+    {".png",  "image/png"},
+    {".jpg",  "image/jpeg"},
+    {".jpeg", "image/jpeg"},
+    {".gif",  "image/gif"},
+    {".svg",  "image/svg+xml"},
+    {".txt",  "text/plain"},
+    {".xml",  "application/xml"},
+    {".pdf",  "application/pdf"},
+    {".ico",  "image/x-icon"},
+    {".woff", "font/woff"},
+    {".woff2","font/woff2"},
+    {".ttf",  "font/ttf"},
+    {".eot",  "application/vnd.ms-fontobject"},
+    {".mp4",  "video/mp4"},
+    {".webm", "video/webm"},
+    {".mp3",  "audio/mpeg"},
+    {".wav",  "audio/wav"},
+    {NULL,    NULL}  /* Sentinel */
+};
+
+/* Helper function to send HTTP response with additional headers */
+static int http_send_response_with_headers(MqttBroker* broker, BROKER_SOCKET_T sock, 
+                                           const char* status_line, const char* content_type,
+                                           const char* extra_headers,
+                                           const char* body, int body_len)
 {
-    char header_buf[256];
+    char header_buf[512];
     int header_len;
     int total_sent = 0;
     int rc;
@@ -153,11 +196,20 @@ static int http_send_response(MqttBroker* broker, BROKER_SOCKET_T sock,
     }
 
     /* Build header */
-    header_len = XSNPRINTF(header_buf, sizeof(header_buf),
-                          "%s%s%s",
-                          status_line,
-                          content_type,
-                          CONNECTION_CLOSE);
+    if (extra_headers && extra_headers[0] != '\0') {
+        header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                              "%s%s%s%s",
+                              status_line,
+                              content_type,
+                              extra_headers,
+                              CONNECTION_CLOSE);
+    } else {
+        header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                              "%s%s%s",
+                              status_line,
+                              content_type,
+                              CONNECTION_CLOSE);
+    }
 
     if (header_len <= 0 || header_len >= (int)sizeof(header_buf)) {
         return MQTT_CODE_ERROR_OUT_OF_BUFFER;
@@ -184,15 +236,26 @@ static int http_send_response(MqttBroker* broker, BROKER_SOCKET_T sock,
     return total_sent;
 }
 
-/* Helper function to validate API token */
-static int validate_api_token(MqttBrokerApiContext* api_ctx, const char* auth_header)
+/* Helper function to send HTTP response */
+static int http_send_response(MqttBroker* broker, BROKER_SOCKET_T sock, 
+                              const char* status_line, const char* content_type,
+                              const char* body, int body_len)
+{
+    return http_send_response_with_headers(broker, sock, status_line, content_type, NULL, body, body_len);
+}
+
+/* Helper function to decode Base64 */
+extern int ws_base64_decode(const char* src, int src_len, byte* dst, int dst_max);
+
+/* Helper function to validate HTTP Basic authentication */
+static int validate_http_basic_auth(MqttBrokerApiContext* api_ctx, const char* auth_header)
 {
     if (!api_ctx || !auth_header) {
         return 0;
     }
 
-    /* If no token configured, allow access */
-    if (api_ctx->api_token[0] == '\0') {
+    /* If no username configured, allow access */
+    if (api_ctx->http_username[0] == '\0') {
         return 1;
     }
 
@@ -201,8 +264,34 @@ static int validate_api_token(MqttBrokerApiContext* api_ctx, const char* auth_he
         return 0;
     }
 
-    /* Compare the token after "Basic " prefix */
-    if (XSTRCMP(auth_header + 6, api_ctx->api_token) == 0) {
+    /* Decode Base64 credentials */
+    const char* b64_credentials = auth_header + 6;
+    int b64_len = (int)XSTRLEN(b64_credentials);
+    
+    /* Allocate buffer for decoded credentials (username:password) */
+    char credentials[256];
+    int decoded_len = ws_base64_decode(b64_credentials, b64_len, 
+                                       (byte*)credentials, sizeof(credentials) - 1);
+    
+    if (decoded_len <= 0) {
+        return 0;  /* Invalid Base64 */
+    }
+    
+    credentials[decoded_len] = '\0';
+    
+    /* Find the colon separator between username and password */
+    char* colon = XSTRCHR(credentials, ':');
+    if (!colon) {
+        return 0;  /* Invalid format */
+    }
+    
+    *colon = '\0';
+    char* username = credentials;
+    char* password = colon + 1;
+    
+    /* Compare username and password */
+    if (XSTRCMP(username, api_ctx->http_username) == 0 &&
+        XSTRCMP(password, api_ctx->http_password) == 0) {
         return 1;
     }
 
@@ -508,6 +597,194 @@ static int handle_get_options(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T soc
                              response_body, body_len);
 }
 
+/* Helper function to get MIME type based on file extension */
+static const char* get_mime_type(const char* filepath) {
+    const char* ext = strrchr(filepath, '.');
+    if (!ext) return "application/octet-stream";
+    
+    /* Search in MIME type table */
+    for (int i = 0; mime_type_table[i].extension != NULL; i++) {
+        if (strnicmp(ext, mime_type_table[i].extension, strlen(mime_type_table[i].extension)) == 0) {
+            return mime_type_table[i].mime_type;
+        }
+    }
+    
+    return "application/octet-stream";
+}
+
+/* Helper function to check if path is safe (no directory traversal) */
+static int is_safe_path(const char* path) {
+    if (!path) return 0;
+    
+    /* Allow root path */
+    if (XSTRCMP(path, "/") == 0)
+        return 1;
+    
+    /* Only reject directory traversal attempts (..) */
+    if (strstr(path, "..") != NULL)
+        return 0;
+    
+    return 1;
+}
+
+/* Helper function to check if path is a directory */
+#ifdef _WIN32
+    #include <sys/stat.h>
+    static int is_directory(const char* path) {
+        struct _stat st;
+        if (_stat(path, &st) != 0) return 0;
+        return (st.st_mode & _S_IFDIR) != 0;
+    }
+#else
+    #include <sys/stat.h>
+    static int is_directory(const char* path) {
+        struct stat st;
+        if (stat(path, &st) != 0) return 0;
+        return S_ISDIR(st.st_mode);
+    }
+#endif
+
+/* Handle GET request for static files */
+static int handle_static_file(MqttBroker* broker, BROKER_SOCKET_T sock, const char* url_path) {
+    FILE* file = NULL;
+    char full_path[512];
+    char header_buf[256];
+    byte read_buf[STATIC_FILE_BUF_SIZE];
+    int header_len;
+    long file_size;
+    int bytes_read;
+    int total_sent = 0;
+    int rc;
+    const char* mime_type;
+    const char* static_dir;
+    const char* actual_path = url_path;
+    char index_path[512];
+    
+    if (!broker || sock == BROKER_SOCKET_INVALID || !url_path) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Validate path safety */
+    if (!is_safe_path(url_path)) {
+        BA_LOG_WARN(broker, "Static file request rejected (unsafe path): %s", url_path);
+        return http_send_response(broker, sock, HTTP_400_BAD_REQUEST, 
+                                 CONTENT_TYPE_TEXT, "Bad Request", 11);
+    }
+    
+    /* Determine static directory */
+    static_dir = broker->static_dir ? broker->static_dir : "www";
+    
+    /* Handle root path - map to index.html */
+    const char* effective_path = url_path;
+    char root_index_path[512];
+    if (XSTRCMP(url_path, "/") == 0) {
+        header_len = XSNPRINTF(root_index_path, sizeof(root_index_path), "%s/index.html", static_dir);
+        if (header_len <= 0 || header_len >= (int)sizeof(root_index_path)) {
+            return http_send_response(broker, sock, HTTP_400_BAD_REQUEST, 
+                                     CONTENT_TYPE_TEXT, "Bad Request", 11);
+        }
+        effective_path = root_index_path;
+        BA_LOG_DBG(broker, "Root path detected, mapping to: %s", root_index_path);
+    } else {
+        /* Build full file path */
+        header_len = XSNPRINTF(full_path, sizeof(full_path), "%s/%s", static_dir, url_path);
+        if (header_len <= 0 || header_len >= (int)sizeof(full_path)) {
+            return http_send_response(broker, sock, HTTP_400_BAD_REQUEST, 
+                                     CONTENT_TYPE_TEXT, "Bad Request", 11);
+        }
+        effective_path = full_path;
+    }
+    
+    /* Check if path is a directory, if so, append index.html */
+    if (is_directory(effective_path)) {
+        header_len = XSNPRINTF(index_path, sizeof(index_path), "%s/index.html", effective_path);
+        if (header_len <= 0 || header_len >= (int)sizeof(index_path)) {
+            return http_send_response(broker, sock, HTTP_400_BAD_REQUEST, 
+                                     CONTENT_TYPE_TEXT, "Bad Request", 11);
+        }
+        actual_path = index_path;
+        BA_LOG_DBG(broker, "Directory detected, mapping to: %s", index_path);
+    } else {
+        actual_path = effective_path;
+    }
+    
+    /* Check if file exists and is readable */
+    if (access(actual_path, F_OK) != 0) {
+        BA_LOG_DBG(broker, "Static file not found: %s", actual_path);
+        return http_send_response(broker, sock, HTTP_404_NOT_FOUND, 
+                                 CONTENT_TYPE_TEXT, "Not Found", 9);
+    }
+    
+    /* Open file */
+    file = fopen(actual_path, "rb");
+    if (!file) {
+        BA_LOG_ERR(broker, "Failed to open static file: %s", actual_path);
+        return http_send_response(broker, sock, HTTP_500_INTERNAL_ERROR, 
+                                 CONTENT_TYPE_TEXT, "Internal Server Error", 21);
+    }
+    
+    /* Get file size */
+    fseek(file, 0, SEEK_END);
+    file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
+    if (file_size < 0) {
+        fclose(file);
+        return http_send_response(broker, sock, HTTP_500_INTERNAL_ERROR, 
+                                 CONTENT_TYPE_TEXT, "Internal Server Error", 21);
+    }
+    
+    /* Get MIME type */
+    mime_type = get_mime_type(actual_path);
+    
+    /* Build and send HTTP response header */
+    header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: %s\r\n"
+                          "Content-Length: %ld\r\n"
+                          "Connection: close\r\n"
+                          "\r\n",
+                          mime_type, file_size);
+    
+    if (header_len <= 0 || header_len >= (int)sizeof(header_buf)) {
+        fclose(file);
+        return MQTT_CODE_ERROR_OUT_OF_BUFFER;
+    }
+    
+    /* Send header */
+    rc = broker->net.write(broker->net.ctx, sock, (const byte*)header_buf, header_len, broker->timeout_ms);
+    if (rc != header_len) {
+        BA_LOG_ERR(broker, "Failed to send static file header: %d", rc);
+        fclose(file);
+        return MQTT_CODE_ERROR_NETWORK;
+    }
+    total_sent += rc;
+    
+    /* Stream file content in chunks */
+    while ((bytes_read = (int)fread(read_buf, 1, STATIC_FILE_BUF_SIZE, file)) > 0) {
+        int sent = 0;
+        while (sent < bytes_read) {
+            rc = broker->net.write(broker->net.ctx, sock, read_buf + sent, 
+                                  bytes_read - sent, broker->timeout_ms);
+            if (rc <= 0) {
+                BA_LOG_ERR(broker, "Failed to send static file chunk: %d", rc);
+                fclose(file);
+                return MQTT_CODE_ERROR_NETWORK;
+            }
+            sent += rc;
+            total_sent += rc;
+        }
+    }
+    
+    /* Close file */
+    fclose(file);
+    
+    BA_LOG_DBG(broker, "Static file served: %s (%ld bytes, total_sent=%d)", 
+              url_path, file_size, total_sent);
+    
+    return MQTT_CODE_SUCCESS;
+}
+
 /* Handle POST publish/<topic> endpoint */
 static int handle_post_publish(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock, 
                               const char* topic, const char* query_string, 
@@ -683,7 +960,7 @@ static const ConfigItemDescriptor config_items[] = {
     {"rx_buf_sz", CONFIG_TYPE_UINT, CONFIG_OFFSET(rx_buf_sz), FIELD_SIZE_WORD16, {.uint_range = {256, 65535}}},
     {"tx_buf_sz", CONFIG_TYPE_UINT, CONFIG_OFFSET(tx_buf_sz), FIELD_SIZE_WORD16, {.uint_range = {256, 65535}}},
     {"listen_backlog", CONFIG_TYPE_UINT, CONFIG_OFFSET(listen_backlog), FIELD_SIZE_WORD16, {.uint_range = {1, 1024}}},
-    {"enable_api", CONFIG_TYPE_BOOL, CONFIG_OFFSET(enable_api), FIELD_SIZE_BYTE, {0}},
+    {"enable_http", CONFIG_TYPE_BOOL, CONFIG_OFFSET(enable_http), FIELD_SIZE_BYTE, {0}},
     
 #ifdef ENABLE_MQTT_TLS
     /* TLS settings */
@@ -720,8 +997,9 @@ static const ConfigItemDescriptor config_items[] = {
     {"username", CONFIG_TYPE_STRING, CONFIG_OFFSET(username), FIELD_SIZE_BYTE, {.str_range = {0, 128}}},
     {"password", CONFIG_TYPE_STRING, CONFIG_OFFSET(password), FIELD_SIZE_BYTE, {.str_range = {0, 128}}},
     
-    /* API settings */
-    {"api_token", CONFIG_TYPE_STRING, CONFIG_OFFSET(api_token), FIELD_SIZE_BYTE, {.str_range = {12, sizeof(((MqttBroker*)0)->api_token) - 1}}},
+    /* HTTP API settings */
+    {"http_username", CONFIG_TYPE_STRING, CONFIG_OFFSET(http_username), FIELD_SIZE_BYTE, {.str_range = {0, sizeof(((MqttBroker*)0)->http_username) - 1}}},
+    {"http_password", CONFIG_TYPE_STRING, CONFIG_OFFSET(http_password), FIELD_SIZE_BYTE, {.str_range = {0, sizeof(((MqttBroker*)0)->http_password) - 1}}},
     
     {NULL, 0, 0, 0, {0}} /* Sentinel */
 };
@@ -1015,11 +1293,13 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
     BA_LOG_DBG(api_ctx->broker, "API Request %s %s%s%s from=%s",
               method, path, (query[0] ? "?" : ""), query, client_ip);
     
-    /* Validate API token if configured */
-    if (!validate_api_token(api_ctx, auth_header)) {
+    /* Validate HTTP Basic authentication */
+    if (!validate_http_basic_auth(api_ctx, auth_header)) {
         LOG_API_RESPONSE(api_ctx->broker, 401, method, path, query, client_ip);
-        return http_send_response(api_ctx->broker, sock, HTTP_401_UNAUTHORIZED, 
-                                 CONTENT_TYPE_TEXT, "Unauthorized", 12);
+        return http_send_response_with_headers(api_ctx->broker, sock, HTTP_401_UNAUTHORIZED, 
+                                              CONTENT_TYPE_TEXT,
+                                              WWW_AUTHENTICATE_BASIC,
+                                              "Unauthorized", 12);
     }
     
     /* Find body start (after double CRLF) */
@@ -1047,10 +1327,17 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
             rc = handle_get_options(api_ctx, sock);
             LOG_API_RESPONSE(api_ctx->broker, 200, method, path, "", client_ip);
             return rc;
-        } else {
+        } else if (XSTRNCMP(path, "/api/", 5) == 0) {
+            /* Unknown API endpoint */
             LOG_API_RESPONSE(api_ctx->broker, 404, method, path, query, client_ip);
             return http_send_response(api_ctx->broker, sock, HTTP_404_NOT_FOUND, 
                                      CONTENT_TYPE_TEXT, "Not Found", 9);
+        } else {
+            /* Serve static files for non-API paths */
+            rc = handle_static_file(api_ctx->broker, sock, path);
+            LOG_API_RESPONSE(api_ctx->broker, (rc == MQTT_CODE_SUCCESS) ? 200 : 404, 
+                           method, path, query, client_ip);
+            return rc;
         }
     } else if (XSTRCMP(method, "POST") == 0) {
         if (XSTRNCMP(path, "/api/publish/", 13) == 0) {
@@ -1129,14 +1416,12 @@ int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* api_ctx, word16
     api_ctx->api_port = port;
     api_ctx->use_api = 1;
     
-    /* Copy API token from broker configuration */
-    if (broker && broker->api_token[0] != '\0') {
-        XSTRNCPY(api_ctx->api_token, broker->api_token, sizeof(api_ctx->api_token) - 1);
-        api_ctx->api_token[sizeof(api_ctx->api_token) - 1] = '\0';
-    } else {
-        /* Use default token if broker doesn't have one configured */
-        XSTRNCPY(api_ctx->api_token, "22182666", sizeof(api_ctx->api_token) - 1);
-        api_ctx->api_token[sizeof(api_ctx->api_token) - 1] = '\0';
+    /* Copy HTTP Basic authentication credentials from broker configuration */
+    if (broker) {
+        XSTRNCPY(api_ctx->http_username, broker->http_username, sizeof(api_ctx->http_username) - 1);
+        api_ctx->http_username[sizeof(api_ctx->http_username) - 1] = '\0';
+        XSTRNCPY(api_ctx->http_password, broker->http_password, sizeof(api_ctx->http_password) - 1);
+        api_ctx->http_password[sizeof(api_ctx->http_password) - 1] = '\0';
     }
     
     /* Start listening on API port */
@@ -1147,6 +1432,10 @@ int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* api_ctx, word16
             api_ctx->use_api = 0;
             return rc;
         }
+        
+        /* Log static directory configuration */
+        const char* static_dir = broker->static_dir ? broker->static_dir : "www";
+        BA_LOG_INFO(broker, "HTTP server started on port %u, root directory: %s", port, static_dir);
     } else {
         api_ctx->use_api = 0;
         return MQTT_CODE_ERROR_BAD_ARG;
@@ -1155,23 +1444,31 @@ int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* api_ctx, word16
     return MQTT_CODE_SUCCESS;
 }
 
-/* Set API token for authentication */
-int MqttBrokerApi_SetToken(MqttBrokerApiContext* api_ctx, const char* token)
+/* Set HTTP Basic authentication credentials */
+int MqttBrokerApi_SetCredentials(MqttBrokerApiContext* api_ctx, const char* username, const char* password)
 {
-    if (!api_ctx || !token) {
+    if (!api_ctx) {
         return MQTT_CODE_ERROR_BAD_ARG;
     }
     
-    /* Validate token length */
-    if (XSTRLEN(token) < MIN_API_TOKEN_LENGTH) {
-        return MQTT_CODE_ERROR_BAD_ARG;
+    /* Copy username */
+    if (username) {
+        XSTRNCPY(api_ctx->http_username, username, sizeof(api_ctx->http_username) - 1);
+        api_ctx->http_username[sizeof(api_ctx->http_username) - 1] = '\0';
+    } else {
+        api_ctx->http_username[0] = '\0';
     }
     
-    /* Copy token */
-    XSTRNCPY(api_ctx->api_token, token, sizeof(api_ctx->api_token) - 1);
-    api_ctx->api_token[sizeof(api_ctx->api_token) - 1] = '\0';
+    /* Copy password */
+    if (password) {
+        XSTRNCPY(api_ctx->http_password, password, sizeof(api_ctx->http_password) - 1);
+        api_ctx->http_password[sizeof(api_ctx->http_password) - 1] = '\0';
+    } else {
+        api_ctx->http_password[0] = '\0';
+    }
     
-    BA_LOG_INFO(api_ctx->broker, "API token set (length: %zu)", XSTRLEN(token));
+    BA_LOG_INFO(api_ctx->broker, "HTTP Basic auth credentials set (username: %s)", 
+               api_ctx->http_username[0] ? api_ctx->http_username : "(none)");
     
     return MQTT_CODE_SUCCESS;
 }

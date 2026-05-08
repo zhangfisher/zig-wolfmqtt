@@ -230,7 +230,8 @@ typedef struct MqttBrokerApiContext {
     BROKER_SOCKET_T api_listen_sock;
     word16 api_port;
     byte use_api;
-    char api_token[64];  /* API authentication token */
+    char http_username[64];  /* HTTP Basic authentication username */
+    char http_password[64];  /* HTTP Basic authentication password */
 } MqttBrokerApiContext;
 
 /* -------------------------------------------------------------------------- */
@@ -500,11 +501,13 @@ typedef struct MqttBroker {
     MqttBrokerConnectCb    on_connect;
     MqttBrokerDisconnectCb on_disconnect;
     
-    byte enable_api;                /* Enable HTTP API (default: 1) */
+    byte enable_http;               /* Enable HTTP server (default: 1) */
     word16 api_port;                /* HTTP API server port (default: 8081) */
+    const char* static_dir;         /* Static files directory (NULL = "./www") */
     /* HTTP API support (always enabled) */
     MqttBrokerApiContext* api_ctx;  /* HTTP API context */
-    char api_token[64];             /* API authentication token */
+    char http_username[64];         /* HTTP Basic authentication username */
+    char http_password[64];         /* HTTP Basic authentication password */
 } MqttBroker;
 
 /* -------------------------------------------------------------------------- */
@@ -572,8 +575,8 @@ WOLFMQTT_API int wolfmqtt_broker(int argc, char** argv);
 /* Initialize the broker HTTP API */
 WOLFMQTT_API int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* api_ctx, word16 port);
 
-/* Set API authentication token */
-WOLFMQTT_API int MqttBrokerApi_SetToken(MqttBrokerApiContext* api_ctx, const char* token);
+/* Set HTTP Basic authentication credentials */
+WOLFMQTT_API int MqttBrokerApi_SetCredentials(MqttBrokerApiContext* api_ctx, const char* username, const char* password);
 
 /* Process API events (should be called from main broker loop) */
 WOLFMQTT_API int MqttBrokerApi_Process(MqttBrokerApiContext* api_ctx);
