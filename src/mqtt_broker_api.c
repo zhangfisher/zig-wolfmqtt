@@ -29,6 +29,7 @@
 #include <ctype.h>
 #include <stddef.h> /* for offsetof */
 #include <limits.h> /* for ULONG_MAX */
+#include <stdlib.h> /* for rand, srand */
 
 #ifdef _WIN32
     #include <io.h>
@@ -58,6 +59,11 @@
     #include "wolfmqtt/mqtt_broker_transport.h"
 #endif
 
+/* Cookie and Session management constants */
+#define SESSION_ID_LENGTH       32
+#define MAX_SESSIONS            16
+#define DEFAULT_SESSION_TIMEOUT 3600  /* 1 hour in seconds */
+
 /* Forward declarations */
 extern int BrokerPublish_Message(MqttBroker* broker, const char* topic,
                                  const byte* payload, word16 payload_len,
@@ -66,6 +72,13 @@ extern int BrokerPublish_Message(MqttBroker* broker, const char* topic,
 #ifdef ENABLE_MQTT_WEBSOCKET
 /* Note: WebSocket client handling needs to be done through broker's public API */
 #endif
+
+/* Cookie and Session management function declarations */
+static void generate_session_id(char* session_id, int max_len);
+static int store_session(MqttBrokerApiContext* api_ctx, char* session_id, int max_len);
+static int validate_session(MqttBrokerApiContext* api_ctx, const char* session_id);
+static void remove_session(MqttBrokerApiContext* api_ctx, const char* session_id);
+static int extract_session_from_cookie(const char* cookie_header, char* session_id, int max_len);
 
 /* API token length requirement */
 #define MIN_API_TOKEN_LENGTH    12
@@ -116,7 +129,10 @@ static int strnicmp(const char* s1, const char* s2, size_t n) {
     return 0;
 }
 
-/* Time abstraction - use same as mqtt_broker.c */
+/* Time abstraction - use same as mqtt_broker.c (must be before session functions) */
+#ifndef WOLFMQTT_BROKER_TIME_T
+    #define WOLFMQTT_BROKER_TIME_T  unsigned long
+#endif
 #ifndef WOLFMQTT_BROKER_GET_TIME_S
     #include <time.h>
     #define WOLFMQTT_BROKER_GET_TIME_S() ((unsigned long)time(NULL))
@@ -124,6 +140,7 @@ static int strnicmp(const char* s1, const char* s2, size_t n) {
 
 /* HTTP response codes */
 #define HTTP_200_OK             "HTTP/1.1 200 OK\r\n"
+#define HTTP_204_NO_CONTENT     "HTTP/1.1 204 No Content\r\n"
 #define HTTP_400_BAD_REQUEST    "HTTP/1.1 400 Bad Request\r\n"
 #define HTTP_401_UNAUTHORIZED   "HTTP/1.1 401 Unauthorized\r\n"
 #define HTTP_404_NOT_FOUND      "HTTP/1.1 404 Not Found\r\n"
@@ -174,13 +191,262 @@ static const MimeTypeMap mime_type_table[] = {
     {NULL,    NULL}  /* Sentinel */
 };
 
+/* Helper function to generate a random session ID */
+static void generate_session_id(char* session_id, int max_len)
+{
+    static const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    int i;
+    
+    if (!session_id || max_len < SESSION_ID_LENGTH + 1) return;
+    
+    /* Seed random number generator if not already seeded */
+    static int seeded = 0;
+    if (!seeded) {
+        srand((unsigned int)time(NULL));
+        seeded = 1;
+    }
+    
+    for (i = 0; i < SESSION_ID_LENGTH && i < max_len - 1; i++) {
+        session_id[i] = chars[rand() % (sizeof(chars) - 1)];
+    }
+    session_id[i] = '\0';
+}
+
+/* Store a new session and return the session ID */
+static int store_session(MqttBrokerApiContext* api_ctx, char* session_id, int max_len)
+{
+    int i;
+    
+    if (!api_ctx || !session_id || max_len < SESSION_ID_LENGTH + 1) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Find empty slot or reuse oldest expired session */
+    WOLFMQTT_BROKER_TIME_T now = WOLFMQTT_BROKER_GET_TIME_S();
+    int oldest_idx = -1;
+    WOLFMQTT_BROKER_TIME_T oldest_time = now;
+    
+    for (i = 0; i < MAX_SESSIONS; i++) {
+        if (api_ctx->active_sessions[i][0] == '\0') {
+            /* Found empty slot */
+            generate_session_id(session_id, max_len);
+            strncpy(api_ctx->active_sessions[i], session_id, sizeof(api_ctx->active_sessions[i]) - 1);
+            api_ctx->active_sessions[i][sizeof(api_ctx->active_sessions[i]) - 1] = '\0';
+            api_ctx->session_times[i] = now;
+            api_ctx->session_count++;
+            return MQTT_CODE_SUCCESS;
+        }
+        
+        /* Check if session is expired */
+        if ((now - api_ctx->session_times[i]) > api_ctx->session_timeout_sec) {
+            /* Session expired, reuse this slot */
+            generate_session_id(session_id, max_len);
+            strncpy(api_ctx->active_sessions[i], session_id, sizeof(api_ctx->active_sessions[i]) - 1);
+            api_ctx->active_sessions[i][sizeof(api_ctx->active_sessions[i]) - 1] = '\0';
+            api_ctx->session_times[i] = now;
+            return MQTT_CODE_SUCCESS;
+        }
+        
+        /* Track oldest session for potential eviction */
+        if (api_ctx->session_times[i] < oldest_time) {
+            oldest_time = api_ctx->session_times[i];
+            oldest_idx = i;
+        }
+    }
+    
+    /* All slots full, evict oldest */
+    if (oldest_idx >= 0) {
+        generate_session_id(session_id, max_len);
+        strncpy(api_ctx->active_sessions[oldest_idx], session_id, sizeof(api_ctx->active_sessions[oldest_idx]) - 1);
+        api_ctx->active_sessions[oldest_idx][sizeof(api_ctx->active_sessions[oldest_idx]) - 1] = '\0';
+        api_ctx->session_times[oldest_idx] = now;
+        return MQTT_CODE_SUCCESS;
+    }
+    
+    return MQTT_CODE_ERROR_OUT_OF_BUFFER;
+}
+
+/* Validate if a session ID is valid and not expired */
+static int validate_session(MqttBrokerApiContext* api_ctx, const char* session_id)
+{
+    int i;
+    
+    if (!api_ctx || !session_id || session_id[0] == '\0') {
+        return 0;
+    }
+    
+    WOLFMQTT_BROKER_TIME_T now = WOLFMQTT_BROKER_GET_TIME_S();
+    
+    for (i = 0; i < MAX_SESSIONS; i++) {
+        if (api_ctx->active_sessions[i][0] != '\0' && 
+            strcmp(api_ctx->active_sessions[i], session_id) == 0) {
+            /* Check if session is still valid */
+            if ((now - api_ctx->session_times[i]) <= api_ctx->session_timeout_sec) {
+                return 1;  /* Valid session */
+            } else {
+                /* Expired session, clear it */
+                api_ctx->active_sessions[i][0] = '\0';
+                api_ctx->session_times[i] = 0;
+                if (api_ctx->session_count > 0) api_ctx->session_count--;
+                return 0;
+            }
+        }
+    }
+    
+    return 0;  /* Session not found */
+}
+
+/* Remove a session (for logout) */
+static void remove_session(MqttBrokerApiContext* api_ctx, const char* session_id)
+{
+    int i;
+    
+    if (!api_ctx || !session_id) return;
+    
+    for (i = 0; i < MAX_SESSIONS; i++) {
+        if (api_ctx->active_sessions[i][0] != '\0' && 
+            strcmp(api_ctx->active_sessions[i], session_id) == 0) {
+            api_ctx->active_sessions[i][0] = '\0';
+            api_ctx->session_times[i] = 0;
+            if (api_ctx->session_count > 0) api_ctx->session_count--;
+            break;
+        }
+    }
+}
+
+/* Extract session ID from cookie header */
+static int extract_session_from_cookie(const char* cookie_header, char* session_id, int max_len)
+{
+    const char* session_start;
+    const char* end;
+    int len;
+    
+    if (!cookie_header || !session_id || max_len < 1) {
+        return 0;
+    }
+    
+    session_id[0] = '\0';
+    
+    /* Look for "session=" in cookie string */
+    session_start = strstr(cookie_header, "session=");
+    if (!session_start) {
+        return 0;
+    }
+    
+    session_start += 8; /* Skip "session=" */
+    
+    /* Find end of session value (semicolon or end of string) */
+    end = strchr(session_start, ';');
+    if (end) {
+        len = (int)(end - session_start);
+    } else {
+        len = strlen(session_start);
+    }
+    
+    if (len >= max_len) {
+        len = max_len - 1;
+    }
+    
+    strncpy(session_id, session_start, len);
+    session_id[len] = '\0';
+    
+    return 1;
+}
+
+/* Helper function to build custom HTTP headers from broker configuration */
+static int build_custom_headers(MqttBroker* broker, char* buffer, int buffer_size)
+{
+    int total_len = 0;
+    
+    if (!broker || !buffer || buffer_size <= 0) {
+        return 0;
+    }
+    
+    buffer[0] = '\0';
+    
+    /* Add default CORS headers (most permissive policy) */
+    {
+        const char* cors_headers = 
+            "Access-Control-Allow-Origin: *\r\n"
+            "Access-Control-Allow-Methods: *\r\n"
+            "Access-Control-Allow-Headers: *\r\n"
+            "Access-Control-Max-Age: 86400\r\n";
+        
+        int cors_len = (int)XSTRLEN(cors_headers);
+        if (cors_len < buffer_size) {
+            XSTRNCPY(buffer, cors_headers, buffer_size - 1);
+            buffer[buffer_size - 1] = '\0';
+            total_len = cors_len;
+        } else {
+            return 0;  /* Buffer too small */
+        }
+    }
+    
+    /* Add custom headers from broker->http_headers if configured */
+    if (broker && broker->http_headers && broker->http_headers[0] != '\0') {
+        const char* src = broker->http_headers;
+        const char* semicolon;
+        int remaining = buffer_size - total_len - 1;
+        
+        while (*src && remaining > 0) {
+            /* Find next semicolon or end of string */
+            semicolon = XSTRCHR(src, ';');
+            
+            int header_len;
+            if (semicolon) {
+                header_len = (int)(semicolon - src);
+            } else {
+                header_len = (int)XSTRLEN(src);
+            }
+            
+            /* Skip empty headers */
+            if (header_len > 0) {
+                /* Trim leading spaces */
+                while (header_len > 0 && *src == ' ') {
+                    src++;
+                    header_len--;
+                }
+                
+                /* Trim trailing spaces */
+                while (header_len > 0 && src[header_len - 1] == ' ') {
+                    header_len--;
+                }
+                
+                if (header_len > 0) {
+                    /* Add \r\n after each header */
+                    int write_len = header_len + 2;  /* header + \r\n */
+                    if (write_len < remaining) {
+                        XMEMCPY(buffer + total_len, src, header_len);
+                        XMEMCPY(buffer + total_len + header_len, "\r\n", 2);
+                        total_len += write_len;
+                        remaining -= write_len;
+                    } else {
+                        break;  /* No more space */
+                    }
+                }
+            }
+            
+            /* Move to next header */
+            if (semicolon) {
+                src = semicolon + 1;
+            } else {
+                break;
+            }
+        }
+    }
+    
+    buffer[total_len] = '\0';
+    return total_len;
+}
+
 /* Helper function to send HTTP response with additional headers */
 static int http_send_response_with_headers(MqttBroker* broker, BROKER_SOCKET_T sock, 
                                            const char* status_line, const char* content_type,
                                            const char* extra_headers,
                                            const char* body, int body_len)
 {
-    char header_buf[512];
+    char header_buf[1024];  /* Increased size to accommodate custom headers */
+    char custom_headers[512];
     int header_len;
     int total_sent = 0;
     int rc;
@@ -189,20 +455,42 @@ static int http_send_response_with_headers(MqttBroker* broker, BROKER_SOCKET_T s
         return MQTT_CODE_ERROR_BAD_ARG;
     }
 
-    /* Build header */
-    if (extra_headers && extra_headers[0] != '\0') {
-        header_len = XSNPRINTF(header_buf, sizeof(header_buf),
-                              "%s%s%s%s",
-                              status_line,
-                              content_type,
-                              extra_headers,
-                              CONNECTION_CLOSE);
+    /* Build custom headers (includes CORS by default) */
+    int custom_len = build_custom_headers(broker, custom_headers, sizeof(custom_headers));
+    
+    /* Build complete header */
+    if (custom_len > 0) {
+        if (extra_headers && extra_headers[0] != '\0') {
+            header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                                  "%s%s%s%s%s",
+                                  status_line,
+                                  content_type,
+                                  custom_headers,
+                                  extra_headers,
+                                  CONNECTION_CLOSE);
+        } else {
+            header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                                  "%s%s%s%s",
+                                  status_line,
+                                  content_type,
+                                  custom_headers,
+                                  CONNECTION_CLOSE);
+        }
     } else {
-        header_len = XSNPRINTF(header_buf, sizeof(header_buf),
-                              "%s%s%s",
-                              status_line,
-                              content_type,
-                              CONNECTION_CLOSE);
+        if (extra_headers && extra_headers[0] != '\0') {
+            header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                                  "%s%s%s%s",
+                                  status_line,
+                                  content_type,
+                                  extra_headers,
+                                  CONNECTION_CLOSE);
+        } else {
+            header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                                  "%s%s%s",
+                                  status_line,
+                                  content_type,
+                                  CONNECTION_CLOSE);
+        }
     }
 
     if (header_len <= 0 || header_len >= (int)sizeof(header_buf)) {
@@ -236,6 +524,126 @@ static int http_send_response(MqttBroker* broker, BROKER_SOCKET_T sock,
                               const char* body, int body_len)
 {
     return http_send_response_with_headers(broker, sock, status_line, content_type, NULL, body, body_len);
+}
+
+/* Helper function to send HTTP response with Set-Cookie header */
+static int http_send_response_with_cookie(MqttBroker* broker, BROKER_SOCKET_T sock,
+                                         const char* status_line, const char* content_type,
+                                         const char* extra_headers,
+                                         const char* cookie_name, const char* cookie_value,
+                                         const char* body, int body_len)
+{
+    char header_buf[1024];  /* Larger buffer to accommodate cookie */
+    int header_len;
+    int total_sent = 0;
+    int rc;
+
+    if (!broker || sock == BROKER_SOCKET_INVALID) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+
+    /* Build header with Set-Cookie */
+    if (extra_headers && extra_headers[0] != '\0') {
+        header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                              "%s%s%sSet-Cookie: %s=%s; Path=/; HttpOnly; SameSite=Strict\r\n%s",
+                              status_line,
+                              content_type,
+                              extra_headers,
+                              cookie_name,
+                              cookie_value,
+                              CONNECTION_CLOSE);
+    } else {
+        header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                              "%s%sSet-Cookie: %s=%s; Path=/; HttpOnly; SameSite=Strict\r\n%s",
+                              status_line,
+                              content_type,
+                              cookie_name,
+                              cookie_value,
+                              CONNECTION_CLOSE);
+    }
+
+    if (header_len <= 0 || header_len >= (int)sizeof(header_buf)) {
+        return MQTT_CODE_ERROR_OUT_OF_BUFFER;
+    }
+
+    /* Send header */
+    rc = broker->net.write(broker->net.ctx, sock, (const byte*)header_buf, header_len, broker->timeout_ms);
+    if (rc != header_len) {
+        BA_LOG_ERR(broker, "Failed to send HTTP header with cookie: %d", rc);
+        return MQTT_CODE_ERROR_NETWORK;
+    }
+    total_sent += rc;
+
+    /* Send body if present */
+    if (body && body_len > 0) {
+        rc = broker->net.write(broker->net.ctx, sock, (const byte*)body, body_len, broker->timeout_ms);
+        if (rc != body_len) {
+            BA_LOG_ERR(broker, "Failed to send HTTP body: %d", rc);
+            return MQTT_CODE_ERROR_NETWORK;
+        }
+        total_sent += rc;
+    }
+
+    return total_sent;
+}
+
+/* Helper function to send HTTP response that clears a cookie */
+static int http_send_response_clear_cookie(MqttBroker* broker, BROKER_SOCKET_T sock,
+                                          const char* status_line, const char* content_type,
+                                          const char* extra_headers,
+                                          const char* cookie_name,
+                                          const char* body, int body_len)
+{
+    char header_buf[1024];
+    int header_len;
+    int total_sent = 0;
+    int rc;
+
+    if (!broker || sock == BROKER_SOCKET_INVALID) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+
+    /* Build header with Set-Cookie to expire (clear) the cookie */
+    if (extra_headers && extra_headers[0] != '\0') {
+        header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                              "%s%s%sSet-Cookie: %s=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT\r\n%s",
+                              status_line,
+                              content_type,
+                              extra_headers,
+                              cookie_name,
+                              CONNECTION_CLOSE);
+    } else {
+        header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                              "%s%sSet-Cookie: %s=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT\r\n%s",
+                              status_line,
+                              content_type,
+                              cookie_name,
+                              CONNECTION_CLOSE);
+    }
+
+    if (header_len <= 0 || header_len >= (int)sizeof(header_buf)) {
+        return MQTT_CODE_ERROR_OUT_OF_BUFFER;
+    }
+
+    /* Send header */
+    rc = broker->net.write(broker->net.ctx, sock, (const byte*)header_buf, header_len, broker->timeout_ms);
+    if (rc != header_len) {
+        BA_LOG_ERR(broker, "Failed to send HTTP header with clear cookie: %d", rc);
+        return MQTT_CODE_ERROR_NETWORK;
+    }
+    total_sent += rc;
+
+    /* Send body if present */
+    if (body && body_len > 0) {
+        rc = broker->net.write(broker->net.ctx, sock, (const byte*)body, body_len, broker->timeout_ms);
+        if (rc != body_len) {
+            BA_LOG_ERR(broker, "Failed to send HTTP body: %d", rc);
+            return MQTT_CODE_ERROR_NETWORK;
+        }
+        total_sent += rc;
+    }
+
+    return total_sent;
 }
 
 /* Helper function to send JSON response with automatic logging */
@@ -287,6 +695,43 @@ static int send_json_response(MqttBroker* broker, BROKER_SOCKET_T sock,
     return rc;
 }
 
+/* Set custom HTTP headers (semicolon-separated) */
+int MqttBroker_SetHttpHeaders(MqttBroker* broker, const char* headers)
+{
+    if (!broker) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Free existing headers if dynamically allocated */
+    if (broker->http_headers) {
+        WOLFMQTT_FREE(broker->http_headers);
+        broker->http_headers = NULL;
+    }
+    
+    if (headers && headers[0] != '\0') {
+        int len = (int)XSTRLEN(headers);
+        broker->http_headers = (char*)WOLFMQTT_MALLOC(len + 1);
+        if (broker->http_headers) {
+            XSTRNCPY(broker->http_headers, headers, len);
+            broker->http_headers[len] = '\0';
+            BROKER_LOG_INFO(broker, "Custom HTTP headers set");
+        } else {
+            return MQTT_CODE_ERROR_MEMORY;
+        }
+    }
+    
+    return MQTT_CODE_SUCCESS;
+}
+
+/* Get current custom HTTP headers */
+const char* MqttBroker_GetHttpHeaders(MqttBroker* broker)
+{
+    if (!broker) {
+        return NULL;
+    }
+    return broker->http_headers;
+}
+
 /* Helper function to decode Base64 */
 extern int ws_base64_decode(const char* src, int src_len, byte* dst, int dst_max);
 
@@ -327,6 +772,43 @@ static ProtocolType detect_protocol_type(const byte* buffer, int len)
 #endif /* ENABLE_MQTT_WEBSOCKET */
 
 #ifdef ENABLE_MQTT_WEBSOCKET
+/* Extract Cookie header from HTTP request buffer */
+static int extract_cookie_from_request(const byte* buffer, int len, 
+                                       char* cookie_buf, int buf_size)
+{
+    const char* cookie_start;
+    const char* cookie_end;
+    int cookie_len;
+    
+    if (!buffer || len <= 0 || !cookie_buf || buf_size <= 0) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Find "Cookie: " header */
+    cookie_start = strnstr((const char*)buffer, "Cookie: ", len);
+    if (!cookie_start) {
+        return MQTT_CODE_ERROR_NOT_FOUND;  /* No cookie found */
+    }
+    
+    cookie_start += 8;  /* Skip "Cookie: " */
+    
+    /* Find end of line */
+    cookie_end = strstr(cookie_start, "\r\n");
+    if (!cookie_end) {
+        return MQTT_CODE_ERROR_NOT_FOUND;
+    }
+    
+    cookie_len = (int)(cookie_end - cookie_start);
+    if (cookie_len >= buf_size) {
+        cookie_len = buf_size - 1;
+    }
+    
+    XMEMCPY(cookie_buf, cookie_start, cookie_len);
+    cookie_buf[cookie_len] = '\0';
+    
+    return MQTT_CODE_SUCCESS;
+}
+
 /* Handle WebSocket upgrade request */
 static int handle_websocket_upgrade(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock,
                                    byte* buffer, int len)
@@ -335,10 +817,39 @@ static int handle_websocket_upgrade(MqttBrokerApiContext* api_ctx, BROKER_SOCKET
     MqttWebSocketContext ws_ctx;
     byte response_buf[1024];
     word32 response_len = 0;
+    char cookie_buf[512];
+    char session_id[SESSION_ID_LENGTH + 1];
     int rc;
     
     if (!broker || !buffer || len <= 0) {
         return MQTT_CODE_ERROR_BAD_ARG;
+    }
+    
+    /* Extract and validate Cookie for authentication */
+    rc = extract_cookie_from_request(buffer, len, cookie_buf, sizeof(cookie_buf));
+    if (rc == MQTT_CODE_SUCCESS) {
+        /* Cookie found, extract session ID */
+        rc = extract_session_from_cookie(cookie_buf, session_id, sizeof(session_id));
+        if (rc == MQTT_CODE_SUCCESS) {
+            /* Validate session */
+            rc = validate_session(api_ctx, session_id);
+            if (rc != MQTT_CODE_SUCCESS) {
+                BA_LOG_WARN(broker, "WebSocket connection rejected: invalid session from sock=%d", (int)sock);
+                return http_send_response(broker, sock, HTTP_401_UNAUTHORIZED,
+                                         CONTENT_TYPE_TEXT, "Unauthorized", 12);
+            }
+            BA_LOG_DBG(broker, "WebSocket connection authenticated via session cookie from sock=%d", (int)sock);
+        } else {
+            /* No session cookie found, reject connection */
+            BA_LOG_WARN(broker, "WebSocket connection rejected: no session in cookie from sock=%d", (int)sock);
+            return http_send_response(broker, sock, HTTP_401_UNAUTHORIZED,
+                                     CONTENT_TYPE_TEXT, "Unauthorized", 12);
+        }
+    } else {
+        /* No cookie header at all, reject connection */
+        BA_LOG_WARN(broker, "WebSocket connection rejected: no authentication cookie from sock=%d", (int)sock);
+        return http_send_response(broker, sock, HTTP_401_UNAUTHORIZED,
+                                 CONTENT_TYPE_TEXT, "Unauthorized", 12);
     }
     
     /* Initialize WebSocket context */
@@ -373,8 +884,6 @@ static int handle_websocket_upgrade(MqttBrokerApiContext* api_ctx, BROKER_SOCKET
         return MQTT_CODE_ERROR_NETWORK;
     }
     
-    BA_LOG_INFO(broker, "WebSocket handshake completed on sock=%d, adding client to broker", (int)sock);
-    
     /* Add client to broker with WebSocket transport */
     rc = MqttBroker_AddWebSocketClient(broker, sock);
     if (rc != MQTT_CODE_SUCCESS) {
@@ -399,8 +908,46 @@ static int is_public_url(MqttBrokerApiContext* api_ctx, const char* url_path)
     }
     
     for (i = 0; i < api_ctx->public_url_count; i++) {
-        if (api_ctx->public_urls[i] && XSTRCMP(url_path, api_ctx->public_urls[i]) == 0) {
-            return 1;  /* URL matches a public path */
+        if (!api_ctx->public_urls[i]) {
+            continue;
+        }
+        
+        const char* pattern = api_ctx->public_urls[i];
+        int pattern_len = (int)XSTRLEN(pattern);
+        
+        /* Rule 1: If pattern starts with '.', it's a file extension match */
+        if (pattern[0] == '.') {
+            /* Get the file extension from url_path */
+            const char* last_dot = strrchr(url_path, '.');
+            if (last_dot) {
+                /* Compare extension (case-insensitive) */
+                if (strnicmp(last_dot, pattern, pattern_len) == 0) {
+                    /* Make sure it's actually the extension (nothing after or ends there) */
+                    if (last_dot[pattern_len] == '\0' || last_dot[pattern_len] == '?') {
+                        return 1;  /* Extension matches */
+                    }
+                }
+            }
+        }
+        /* Rule 2: If pattern ends with '/', it's a prefix match */
+        else if (pattern_len > 0 && pattern[pattern_len - 1] == '/') {
+            /* Check if url_path starts with this prefix */
+            int url_len = (int)XSTRLEN(url_path);
+            if (url_len >= pattern_len - 1) {
+                /* Compare the prefix (excluding the trailing '/') */
+                if (XSTRNCMP(url_path, pattern, pattern_len - 1) == 0) {
+                    /* Make sure it's a proper prefix match */
+                    if (url_len == pattern_len - 1 || url_path[pattern_len - 1] == '/') {
+                        return 1;  /* Prefix matches */
+                    }
+                }
+            }
+        }
+        /* Rule 3: Exact match (original behavior) */
+        else {
+            if (XSTRCMP(url_path, pattern) == 0) {
+                return 1;  /* Exact match */
+            }
         }
     }
     
@@ -414,10 +961,11 @@ static int validate_http_basic_auth(MqttBrokerApiContext* api_ctx, const char* a
         return 0;
     }
 
-    /* If no username configured, allow access */
-    if (api_ctx->http_username[0] == '\0') {
-        return 1;
-    }
+    /* Basic authentication is disabled - only use Cookie/Session authentication */
+    /* This function is kept for backward compatibility but always returns failure */
+    (void)api_ctx;
+    (void)auth_header;
+    return 0;
 
     /* Check if Authorization header starts with "Basic " */
     if (XSTRNCMP(auth_header, "Basic ", 6) != 0) {
@@ -463,7 +1011,8 @@ static int parse_http_request(MqttBroker* broker, byte* buffer, int len,
                              char* method, int method_max,
                              char* path, int path_max,
                              char* query, int query_max,
-                             char* auth_header, int auth_max)
+                             char* auth_header, int auth_max,
+                             char* cookie_header, int cookie_max)
 {
     char* line_start = (char*)buffer;
     char* line_end;
@@ -478,6 +1027,7 @@ static int parse_http_request(MqttBroker* broker, byte* buffer, int len,
     if (path) path[0] = '\0';
     if (query) query[0] = '\0';
     if (auth_header) auth_header[0] = '\0';
+    if (cookie_header) cookie_header[0] = '\0';
 
     /* Find end of request line (first \r\n) */
     line_end = strnstr(line_start, "\r\n", remaining);
@@ -561,6 +1111,20 @@ static int parse_http_request(MqttBroker* broker, byte* buffer, int len,
             if (auth_len >= auth_max) auth_len = auth_max - 1;
             XMEMCPY(auth_header, value_start, auth_len);
             auth_header[auth_len] = '\0';
+        }
+        
+        /* Check for Cookie header */
+        if (cookie_header && strnicmp(line_start, "Cookie:", 7) == 0) {
+            char* value_start = line_start + 7;
+            /* Skip leading spaces */
+            while (*value_start == ' ' && value_start < line_end) {
+                value_start++;
+            }
+            
+            int cookie_len = (int)(line_end - value_start);
+            if (cookie_len >= cookie_max) cookie_len = cookie_max - 1;
+            XMEMCPY(cookie_header, value_start, cookie_len);
+            cookie_header[cookie_len] = '\0';
         }
         
         /* Move to next line */
@@ -909,14 +1473,29 @@ static int handle_static_file(MqttBroker* broker, BROKER_SOCKET_T sock, const ch
     /* Get MIME type */
     mime_type = get_mime_type(actual_path);
     
+    /* Build custom headers (includes CORS by default) */
+    char custom_headers[512];
+    int custom_len = build_custom_headers(broker, custom_headers, sizeof(custom_headers));
+    
     /* Build and send HTTP response header */
-    header_len = XSNPRINTF(header_buf, sizeof(header_buf),
-                          "HTTP/1.1 200 OK\r\n"
-                          "Content-Type: %s\r\n"
-                          "Content-Length: %ld\r\n"
-                          "Connection: close\r\n"
-                          "\r\n",
-                          mime_type, file_size);
+    if (custom_len > 0) {
+        header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                              "HTTP/1.1 200 OK\r\n"
+                              "Content-Type: %s\r\n"
+                              "Content-Length: %ld\r\n"
+                              "%s"
+                              "Connection: close\r\n"
+                              "\r\n",
+                              mime_type, file_size, custom_headers);
+    } else {
+        header_len = XSNPRINTF(header_buf, sizeof(header_buf),
+                              "HTTP/1.1 200 OK\r\n"
+                              "Content-Type: %s\r\n"
+                              "Content-Length: %ld\r\n"
+                              "Connection: close\r\n"
+                              "\r\n",
+                              mime_type, file_size);
+    }
     
     if (header_len <= 0 || header_len >= (int)sizeof(header_buf)) {
         fclose(file);
@@ -928,6 +1507,7 @@ static int handle_static_file(MqttBroker* broker, BROKER_SOCKET_T sock, const ch
     if (rc != header_len) {
         BA_LOG_ERR(broker, "Failed to send static file header: %d", rc);
         fclose(file);
+        /* Immediately mark socket as invalid to prevent reuse */
         return MQTT_CODE_ERROR_NETWORK;
     }
     total_sent += rc;
@@ -939,8 +1519,9 @@ static int handle_static_file(MqttBroker* broker, BROKER_SOCKET_T sock, const ch
             rc = broker->net.write(broker->net.ctx, sock, read_buf + sent, 
                                   bytes_read - sent, broker->timeout_ms);
             if (rc <= 0) {
-                BA_LOG_ERR(broker, "Failed to send static file chunk: %d", rc);
+                BA_LOG_WARN(broker, "Client disconnected during file transfer (sock=%d): %d", (int)sock, rc);
                 fclose(file);
+                /* Client disconnected - socket may be reused by OS, mark as error */
                 return MQTT_CODE_ERROR_NETWORK;
             }
             sent += rc;
@@ -1395,6 +1976,109 @@ static int handle_post_kick(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock,
     }
 }
 
+/* Handle POST /api/login endpoint - Cookie-based authentication */
+static int handle_post_login(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock,
+                            const char* body_start, int body_len, const char* client_ip)
+{
+    MqttBroker* broker = api_ctx->broker;
+    char username[64] = {0};
+    char password[64] = {0};
+    char session_id[SESSION_ID_LENGTH + 1];
+    
+    if (!broker || !body_start || body_len <= 0) {
+        return send_json_response(broker, sock, 400, "POST", "/api/login", "",
+                                 client_ip, "{\"error\":\"Invalid request body\"}");
+    }
+    
+    /* Parse JSON body to extract username and password */
+    /* Simple parsing - look for "username":"xxx" and "password":"xxx" */
+    const char* user_start = strstr(body_start, "\"username\"");
+    const char* pass_start = strstr(body_start, "\"password\"");
+    
+    if (user_start && pass_start) {
+        /* Extract username value */
+        const char* colon = strchr(user_start + 10, ':');
+        if (colon) {
+            const char* quote1 = strchr(colon + 1, '"');
+            if (quote1) {
+                const char* quote2 = strchr(quote1 + 1, '"');
+                if (quote2) {
+                    int user_len = (int)(quote2 - quote1 - 1);
+                    if (user_len >= sizeof(username)) user_len = sizeof(username) - 1;
+                    strncpy(username, quote1 + 1, user_len);
+                    username[user_len] = '\0';
+                }
+            }
+        }
+        
+        /* Extract password value */
+        colon = strchr(pass_start + 10, ':');
+        if (colon) {
+            const char* quote1 = strchr(colon + 1, '"');
+            if (quote1) {
+                const char* quote2 = strchr(quote1 + 1, '"');
+                if (quote2) {
+                    int pass_len = (int)(quote2 - quote1 - 1);
+                    if (pass_len >= sizeof(password)) pass_len = sizeof(password) - 1;
+                    strncpy(password, quote1 + 1, pass_len);
+                    password[pass_len] = '\0';
+                }
+            }
+        }
+    }
+    
+    /* Validate credentials */
+    if (strcmp(username, api_ctx->http_username) == 0 && 
+        strcmp(password, api_ctx->http_password) == 0) {
+        
+        /* Generate and store session */
+        if (store_session(api_ctx, session_id, sizeof(session_id)) == MQTT_CODE_SUCCESS) {
+            BA_LOG_INFO(broker, "Login successful from=%s user=%s", client_ip, username);
+            
+            /* Send response with Set-Cookie header */
+            return http_send_response_with_cookie(broker, sock, HTTP_200_OK,
+                                                 CONTENT_TYPE_JSON, NULL,
+                                                 "session", session_id,
+                                                 "{\"status\":\"success\",\"message\":\"Login successful\"}",
+                                                 49);
+        } else {
+            return send_json_response(broker, sock, 500, "POST", "/api/login", "",
+                                     client_ip, "{\"error\":\"Failed to create session\"}");
+        }
+    } else {
+        BA_LOG_WARN(broker, "Login failed from=%s user=%s", client_ip, username);
+        return send_json_response(broker, sock, 401, "POST", "/api/login", "",
+                                 client_ip, "{\"error\":\"Invalid credentials\"}");
+    }
+}
+
+/* Handle POST /api/logout endpoint - Clear session cookie */
+static int handle_post_logout(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock,
+                             const char* cookie_header, const char* client_ip)
+{
+    MqttBroker* broker = api_ctx->broker;
+    char session_id[SESSION_ID_LENGTH + 1];
+    
+    if (!broker) {
+        return send_json_response(broker, sock, 500, "POST", "/api/logout", "",
+                                 client_ip, "{\"error\":\"Broker not available\"}");
+    }
+    
+    /* Extract session ID from cookie */
+    if (cookie_header && extract_session_from_cookie(cookie_header, session_id, sizeof(session_id))) {
+        /* Remove the session */
+        remove_session(api_ctx, session_id);
+        BA_LOG_INFO(broker, "Logout successful from=%s", client_ip);
+    }
+    
+    /* Send response with clear cookie header */
+    return http_send_response_clear_cookie(broker, sock, HTTP_200_OK,
+                                          CONTENT_TYPE_JSON, NULL,
+                                          "session",
+                                          "{\"status\":\"success\",\"message\":\"Logout successful\"}",
+                                          54);
+}
+
 /* Main HTTP request handler */
 static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T sock, 
                               byte* buffer, int len)
@@ -1403,13 +2087,17 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
     char path[HTTP_MAX_PATH_LEN];
     char query[HTTP_MAX_QUERY_LEN];
     char auth_header[HTTP_MAX_HEADER_LEN];
+    char cookie_header[HTTP_MAX_HEADER_LEN];
     char* body_start;
     int body_len = 0;
     int rc;
     
     if (!api_ctx || !buffer || len <= 0) {
+        BA_LOG_ERR(api_ctx ? api_ctx->broker : NULL, "handle_http_request: invalid parameters");
         return MQTT_CODE_ERROR_BAD_ARG;
     }
+    
+
     
 #ifdef ENABLE_MQTT_WEBSOCKET
     /* Detect protocol type */
@@ -1452,7 +2140,8 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
                            method, sizeof(method),
                            path, sizeof(path),
                            query, sizeof(query),
-                           auth_header, sizeof(auth_header));
+                           auth_header, sizeof(auth_header),
+                           cookie_header, sizeof(cookie_header));
     
     if (rc != MQTT_CODE_SUCCESS) {
         LOG_API_RESPONSE(api_ctx->broker, 400, method, path, query, client_ip);
@@ -1466,16 +2155,66 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
     
     /* Skip authentication for public URLs */
     if (!is_public_url(api_ctx, path)) {
-        /* Validate HTTP Basic authentication */
-        if (!validate_http_basic_auth(api_ctx, auth_header)) {
-            LOG_API_RESPONSE(api_ctx->broker, 401, method, path, query, client_ip);
-            return http_send_response_with_headers(api_ctx->broker, sock, HTTP_401_UNAUTHORIZED, 
-                                                  CONTENT_TYPE_TEXT,
-                                                  WWW_AUTHENTICATE_BASIC,
-                                                  "Unauthorized", 12);
+        BA_LOG_INFO(api_ctx->broker, "URL requires authentication: %s", path);
+        
+        /* Try Cookie-based authentication first */
+        int authenticated = 0;
+        
+        if (cookie_header && cookie_header[0] != '\0') {
+            char session_id[SESSION_ID_LENGTH + 1];
+            if (extract_session_from_cookie(cookie_header, session_id, sizeof(session_id))) {
+                if (validate_session(api_ctx, session_id)) {
+                    authenticated = 1;
+                    BA_LOG_INFO(api_ctx->broker, "Cookie authentication successful for %s", path);
+                }
+            }
+        }
+        
+        /* Fall back to HTTP Basic authentication if cookie auth failed */
+        if (!authenticated) {
+            if (!validate_http_basic_auth(api_ctx, auth_header)) {
+                LOG_API_RESPONSE(api_ctx->broker, 401, method, path, query, client_ip);
+                BA_LOG_INFO(api_ctx->broker, "Authentication failed for %s, will redirect/return 401", path);
+                
+                /* For non-API paths, redirect to login page */
+                if (XSTRNCMP(path, "/api/", 5) != 0) {
+                    char redirect_response[256];
+                    int redirect_len;
+                    
+                    BA_LOG_INFO(api_ctx->broker, "Redirecting non-API path %s to /login.html", path);
+                    redirect_len = XSNPRINTF(redirect_response, sizeof(redirect_response),
+                                            "HTTP/1.1 302 Found\r\n"
+                                            "Location: /login.html\r\n"
+                                            "Content-Length: 0\r\n"
+                                            "Connection: close\r\n"
+                                            "\r\n");
+                    
+                    if (redirect_len > 0 && redirect_len < (int)sizeof(redirect_response)) {
+                        rc = api_ctx->broker->net.write(api_ctx->broker->net.ctx, sock,
+                                                       (const byte*)redirect_response, redirect_len,
+                                                       api_ctx->broker->timeout_ms);
+                        if (rc == redirect_len) {
+                            BA_LOG_INFO(api_ctx->broker, "Redirect response sent successfully (%d bytes)", rc);
+                        } else {
+                            BA_LOG_INFO(api_ctx->broker, "Failed to send redirect: expected=%d, actual=%d", redirect_len, rc);
+                        }
+                        /* Don't return here, let the normal flow close the socket */
+                    } else {
+                        BA_LOG_INFO(api_ctx->broker, "Redirect response buffer overflow: len=%d", redirect_len);
+                    }
+                }
+                
+                /* For API paths, return 401 */
+                BA_LOG_INFO(api_ctx->broker, "Returning 401 for API path %s", path);
+                return http_send_response_with_headers(api_ctx->broker, sock, HTTP_401_UNAUTHORIZED, 
+                                                      CONTENT_TYPE_TEXT,
+                                                      WWW_AUTHENTICATE_BASIC,
+                                                      "Unauthorized", 12);
+            }
+            BA_LOG_INFO(api_ctx->broker, "Basic authentication successful for %s", path);
         }
     } else {
-        BA_LOG_DBG(api_ctx->broker, "Public URL accessed without auth: %s", path);
+        BA_LOG_INFO(api_ctx->broker, "Public URL accessed without auth: %s", path);
     }
     
     /* Find body start (after double CRLF) */
@@ -1502,13 +2241,25 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
                                      CONTENT_TYPE_TEXT, "Not Found", 9);
         } else {
             /* Serve static files for non-API paths */
+            BA_LOG_INFO(api_ctx->broker, "Serving static file for path: %s", path);
             rc = handle_static_file(api_ctx->broker, sock, path);
-            LOG_API_RESPONSE(api_ctx->broker, (rc == MQTT_CODE_SUCCESS) ? 200 : 404, 
-                           method, path, query, client_ip);
+            if (rc == MQTT_CODE_SUCCESS) {
+                LOG_API_RESPONSE(api_ctx->broker, 200, method, path, query, client_ip);
+            } else if (rc == MQTT_CODE_ERROR_NETWORK) {
+                /* Client disconnected - don't log as error, just return */
+                BA_LOG_DBG(api_ctx->broker, "Static file transfer interrupted (client disconnected): %s", path);
+                LOG_API_RESPONSE(api_ctx->broker, 0, method, path, query, client_ip);
+            } else {
+                LOG_API_RESPONSE(api_ctx->broker, 500, method, path, query, client_ip);
+            }
             return rc;
         }
     } else if (XSTRCMP(method, "POST") == 0) {
-        if (XSTRNCMP(path, "/api/publish/", 13) == 0) {
+        if (XSTRCMP(path, "/api/login") == 0) {
+            return handle_post_login(api_ctx, sock, body_start, body_len, client_ip);
+        } else if (XSTRCMP(path, "/api/logout") == 0) {
+            return handle_post_logout(api_ctx, sock, cookie_header, client_ip);
+        } else if (XSTRNCMP(path, "/api/publish/", 13) == 0) {
             return handle_post_publish(api_ctx, sock, path + 13, query, body_start, body_len, client_ip);
         } else if (XSTRCMP(path, "/api/configs") == 0) {
             return handle_post_configs(api_ctx, sock, body_start, body_len, client_ip);
@@ -1521,6 +2272,38 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
             return http_send_response(api_ctx->broker, sock, HTTP_404_NOT_FOUND, 
                                      CONTENT_TYPE_TEXT, "Not Found", 9);
         }
+    } else if (XSTRCMP(method, "OPTIONS") == 0) {
+        /* Handle CORS preflight requests - return 204 No Content with CORS headers */
+        char response_buf[1024];
+        int response_len;
+        int rc;
+        
+        /* Build complete HTTP response with CORS headers */
+        response_len = XSNPRINTF(response_buf, sizeof(response_buf),
+                                "HTTP/1.1 204 No Content\r\n"
+                                "Access-Control-Allow-Origin: *\r\n"
+                                "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
+                                "Access-Control-Allow-Headers: Content-Type, Authorization, Cookie\r\n"
+                                "Access-Control-Max-Age: 86400\r\n"
+                                "Content-Length: 0\r\n"
+                                "Connection: close\r\n"
+                                "\r\n");
+        
+        if (response_len > 0 && response_len < (int)sizeof(response_buf)) {
+            LOG_API_RESPONSE(api_ctx->broker, 204, method, path, query, client_ip);
+            rc = api_ctx->broker->net.write(api_ctx->broker->net.ctx, sock, 
+                                           (const byte*)response_buf, response_len, 
+                                           api_ctx->broker->timeout_ms);
+            if (rc == response_len) {
+                return MQTT_CODE_SUCCESS;
+            } else {
+                BA_LOG_ERR(api_ctx->broker, "Failed to send OPTIONS response: %d", rc);
+                return MQTT_CODE_ERROR_NETWORK;
+            }
+        } else {
+            LOG_API_RESPONSE(api_ctx->broker, 500, method, path, query, client_ip);
+            return MQTT_CODE_ERROR_OUT_OF_BUFFER;
+        }
     } else {
         LOG_API_RESPONSE(api_ctx->broker, 400, method, path, query, client_ip);
         return http_send_response(api_ctx->broker, sock, HTTP_400_BAD_REQUEST, 
@@ -1531,14 +2314,20 @@ static int handle_http_request(MqttBrokerApiContext* api_ctx, BROKER_SOCKET_T so
 /* Accept and process API connections */
 static int api_accept_connection(MqttBrokerApiContext* api_ctx)
 {
-    MqttBroker* broker = api_ctx->broker;
+    MqttBroker* broker;
     BROKER_SOCKET_T new_sock = BROKER_SOCKET_INVALID;
     int rc;
     byte recv_buffer[HTTP_BUFFER_SIZE];
     int bytes_read;
     
+    /* Validate parameters */
+    if (!api_ctx) {
+        return MQTT_CODE_CONTINUE;
+    }
+    
+    broker = api_ctx->broker;
     if (!broker || api_ctx->http_listen_sock == BROKER_SOCKET_INVALID) {
-        return MQTT_CODE_ERROR_BAD_ARG;
+        return MQTT_CODE_CONTINUE;
     }
     
     /* Accept new connection */
@@ -1550,9 +2339,16 @@ static int api_accept_connection(MqttBrokerApiContext* api_ctx)
     /* Read HTTP request */
     bytes_read = broker->net.read(broker->net.ctx, new_sock, recv_buffer, sizeof(recv_buffer), broker->timeout_ms);
     if (bytes_read <= 0) {
-        BA_LOG_ERR(broker, "Failed to read HTTP request: %d", bytes_read);
+        if (bytes_read == MQTT_CODE_CONTINUE || bytes_read == MQTT_CODE_ERROR_TIMEOUT) {
+            /* Timeout or no data yet - close connection gracefully */
+            BA_LOG_DBG(broker, "HTTP request read timeout, closing connection");
+            broker->net.close(broker->net.ctx, new_sock);
+            return MQTT_CODE_CONTINUE;
+        }
+        /* Network error - log and close, but don't crash the broker */
+        BA_LOG_INFO(broker, "Failed to read HTTP request: %d (closing connection)", bytes_read);
         broker->net.close(broker->net.ctx, new_sock);
-        return MQTT_CODE_ERROR_NETWORK;
+        return MQTT_CODE_SUCCESS;  /* Return success to keep broker running */
     }
     
     /* Process HTTP/WebSocket request */
@@ -1565,10 +2361,24 @@ static int api_accept_connection(MqttBrokerApiContext* api_ctx)
     if (proto_type != PROTOCOL_WEBSOCKET)
 #endif
     {
-        broker->net.close(broker->net.ctx, new_sock);
+        /* Always try to close the socket for non-WebSocket connections */
+        /* The close function should be safe to call even if socket is already closed */
+        if (new_sock != BROKER_SOCKET_INVALID) {
+            int close_rc;
+            close_rc = broker->net.close(broker->net.ctx, new_sock);
+            if (close_rc != MQTT_CODE_SUCCESS) {
+                BA_LOG_DBG(broker, "Socket close returned error: %d for sock=%d", close_rc, (int)new_sock);
+            }
+            new_sock = BROKER_SOCKET_INVALID;
+        }
     }
     
-    return (rc >= 0) ? MQTT_CODE_SUCCESS : rc;
+    /* Don't return errors from handle_http_request - just log and continue */
+    if (rc < 0 && rc != MQTT_CODE_CONTINUE) {
+        BA_LOG_INFO(broker, "HTTP request processing error: %d (logged above)", rc);
+    }
+    
+    return MQTT_CODE_SUCCESS;  /* Always return success to keep broker running */
 }
 
 /* Initialize API context */
@@ -1582,6 +2392,19 @@ int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* api_ctx, word16
     api_ctx->broker = broker;
     api_ctx->http_port = port;
     api_ctx->use_api = 1;
+    
+    /* Initialize session management */
+    api_ctx->session_count = 0;
+    api_ctx->session_timeout_sec = DEFAULT_SESSION_TIMEOUT;  /* 1 hour default */
+    /* Generate a simple session secret based on time */
+    {
+        unsigned int seed = (unsigned int)time(NULL);
+        int i;
+        for (i = 0; i < 32 && i < (int)sizeof(api_ctx->session_secret) - 1; i++) {
+            api_ctx->session_secret[i] = 'A' + (rand() % 26);
+        }
+        api_ctx->session_secret[i] = '\0';
+    }
     
     /* Copy HTTP Basic authentication credentials from broker configuration */
     if (broker) {
@@ -1608,12 +2431,32 @@ int MqttBrokerApi_Init(MqttBroker* broker, MqttBrokerApiContext* api_ctx, word16
         return MQTT_CODE_ERROR_BAD_ARG;
     }
     
-    /* Set default public URLs */
+    /* Set default public URLs (login/logout and static resources don't require auth) */
     {
         const char* default_public_urls[] = {
-            "/login.html"
+            /* Exact match - API endpoints */
+            "/api/login",
+            "/api/logout",
+            
+            /* Exact match - HTML pages */
+            "/login.html",
+            
+            /* File extension match - Static assets */
+            ".css",
+            ".js",
+            ".gif",
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".svg", 
+            ".woff",
+            ".woff2",
+            ".ttf",
+            ".eot",
+            "/images/"
         };
-        MqttBrokerApi_SetPublicUrls(api_ctx, default_public_urls, 1);
+        MqttBrokerApi_SetPublicUrls(api_ctx, default_public_urls, 
+                                   sizeof(default_public_urls) / sizeof(default_public_urls[0]));
     }
     
     return MQTT_CODE_SUCCESS;

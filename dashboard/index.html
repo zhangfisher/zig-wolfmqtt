@@ -17,36 +17,89 @@
                 --primary-blue: #2196f3;
                 --secondary-blue: #03a9f4;
                 --accent-cyan: #00bcd4;
-                --accent-glow: rgba(0, 188, 212, 0.15);
+                --accent-glow: rgba(33, 150, 243, 0.1);
+                --error-red: #ef4444;
 
-                /* 中性色调 */
-                --bg-primary: #f8fafc;
-                --bg-secondary: #ffffff;
-                --bg-tertiary: #f1f5f9;
-                --text-primary: #1e293b;
+                /* 梯度背景系统 - 错落有致 */
+                --bg-level-0: #f1f5f9; /* 最外层 - 最浅 */
+                --bg-level-1: #ffffff; /* module容器 */
+                --bg-level-2: #f8fafc; /* panel面板 */
+                --bg-level-3: #f1f5f9; /* 卡片/列表项 */
+                --bg-level-4: #e2e8f0; /* 输入框/二级元素 */
+
+                --bg-primary: var(--bg-level-0);
+                --bg-secondary: var(--bg-level-1);
+                --bg-tertiary: var(--bg-level-2);
+                --bg-card: var(--bg-level-3);
+                --bg-input: var(--bg-level-4);
+
+                --text-primary: #475569;
                 --text-secondary: #64748b;
                 --text-muted: #94a3b8;
                 --border-color: #e2e8f0;
+                --border-focus: var(--primary-blue);
 
-                /* 阴影 */
-                --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.1);
-                --card-shadow-hover: 0 4px 6px rgba(0, 0, 0, 0.05), 0 2px 4px rgba(0, 0, 0, 0.1);
+                /* 阴影梯度 - 增强层次感 */
+                --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+                --shadow-md:
+                    0 2px 4px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+                --shadow-lg:
+                    0 4px 8px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+                --shadow-xl:
+                    0 8px 16px rgba(0, 0, 0, 0.1), 0 4px 8px rgba(0, 0, 0, 0.06);
+                --input-shadow: 0 0 0 3px rgba(33, 150, 243, 0.12);
 
                 /* 字体 */
-                --font-body: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+                --font-body:
+                    "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
                 --font-mono: "JetBrains Mono", monospace;
             }
 
             [data-theme="dark"] {
-                --bg-primary: #0f172a;
-                --bg-secondary: #1e293b;
-                --bg-tertiary: #334155;
-                --text-primary: #f1f5f9;
+                /* 暗色模式梯度背景 */
+                --bg-level-0: #0f172a; /* 最外层 - 最深 */
+                --bg-level-1: #1e293b; /* module容器 */
+                --bg-level-2: #334155; /* panel面板 */
+                --bg-level-3: #475569; /* 卡片/列表项 */
+                --bg-level-4: #64748b; /* 输入框/二级元素 */
+
+                --bg-primary: var(--bg-level-0);
+                --bg-secondary: var(--bg-level-1);
+                --bg-tertiary: var(--bg-level-2);
+                --bg-card: var(--bg-level-3);
+                --bg-input: var(--bg-level-4);
+
+                --text-primary: #e2e8f0;
                 --text-secondary: #cbd5e1;
-                --text-muted: #64748b;
-                --border-color: #334155;
-                --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
-                --card-shadow-hover: 0 4px 6px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.2);
+                --text-muted: #94a3b8;
+                --border-color: #475569;
+
+                --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+                --shadow-md:
+                    0 2px 4px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+                --shadow-lg:
+                    0 4px 8px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.3);
+                --shadow-xl:
+                    0 8px 16px rgba(0, 0, 0, 0.6), 0 4px 8px rgba(0, 0, 0, 0.4);
+                --input-shadow: 0 0 0 3px rgba(33, 150, 243, 0.25);
+            }
+
+            [data-theme="dark"] .form-input,
+            [data-theme="dark"] .form-select {
+                background: var(--bg-input);
+            }
+
+            [data-theme="dark"] .form-input:focus,
+            [data-theme="dark"] .form-select:focus {
+                background: var(--bg-input);
+            }
+
+            [data-theme="dark"] .form-textarea {
+                background: var(--bg-input);
+            }
+
+            [data-theme="dark"] .form-textarea:focus {
+                background: var(--bg-input);
             }
 
             * {
@@ -78,8 +131,10 @@
                 border-radius: 12px;
                 padding: 20px 24px;
                 margin-bottom: 24px;
-                box-shadow: var(--card-shadow);
+                box-shadow: var(--shadow-md);
                 border: 1px solid var(--border-color);
+                position: relative;
+                z-index: 10;
             }
 
             .header-content {
@@ -133,8 +188,11 @@
             }
 
             .connection-btn {
+                display: flex;
+                align-items: center;
+                gap: 8px;
                 padding: 8px 16px;
-                background: var(--accent-cyan);
+                background: #3b82f6;
                 color: #ffffff;
                 border: none;
                 border-radius: 6px;
@@ -142,21 +200,129 @@
                 font-size: 13px;
                 font-weight: 500;
                 transition: all 0.2s ease;
+                min-width: 120px;
+                justify-content: center;
             }
 
+            .connection-btn .btn-icon {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 16px;
+                height: 16px;
+            }
+
+            .connection-btn .btn-icon svg {
+                width: 16px;
+                height: 16px;
+            }
+
+            /* 连接中状态 - 旋转动画 */
+            .connection-btn.connecting {
+                background: #f59e0b;
+                cursor: not-allowed;
+            }
+
+            .connection-btn.connecting .btn-icon {
+                animation: spin 1s linear infinite;
+            }
+
+            @keyframes spin {
+                from {
+                    transform: rotate(0deg);
+                }
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+
+            /* 已连接状态 */
+            .connection-btn.connected {
+                background: #22c55e;
+            }
+
+            /* 已断开状态 - 红色背景 */
             .connection-btn.disconnected {
-                background: var(--text-muted);
+                background: #ef4444;
             }
 
-            .connection-btn:hover {
+            .connection-btn:hover:not(.connecting) {
                 opacity: 0.9;
+                transform: translateY(-1px);
+            }
+
+            /* 通知框 */
+            .notification {
+                position: fixed;
+                top: 110px;
+                left: 50%;
+                transform: translateX(-50%);
+                padding: 12px 20px;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 500;
+                z-index: 1000;
+                box-shadow: var(--shadow-lg);
+                animation: slideDown 0.3s ease;
+                max-width: 400px;
+                text-align: center;
+            }
+
+            .notification.success {
+                background: #dcfce7;
+                color: #166534;
+                border: 1px solid #86efac;
+            }
+
+            .notification.error {
+                background: #fee2e2;
+                color: #991b1b;
+                border: 1px solid #fca5a5;
+            }
+
+            .notification.hide {
+                animation: slideUp 0.3s ease forwards;
+            }
+
+            @keyframes slideDown {
+                from {
+                    opacity: 0;
+                    transform: translateX(-50%) translateY(-20px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateX(-50%) translateY(0);
+                }
+            }
+
+            @keyframes slideUp {
+                from {
+                    opacity: 1;
+                    transform: translateX(-50%) translateY(0);
+                }
+                to {
+                    opacity: 0;
+                    transform: translateX(-50%) translateY(-20px);
+                }
+            }
+
+            [data-theme="dark"] .notification.success {
+                background: #14532d;
+                color: #dcfce7;
+                border: 1px solid #22c55e;
+            }
+
+            [data-theme="dark"] .notification.error {
+                background: #7f1d1d;
+                color: #fee2e2;
+                border: 1px solid #ef4444;
             }
 
             .theme-toggle {
                 width: 36px;
                 height: 36px;
                 border-radius: 6px;
-                background: var(--bg-tertiary);
+                background: var(--bg-card);
                 border: 1px solid var(--border-color);
                 color: var(--text-secondary);
                 cursor: pointer;
@@ -167,7 +333,8 @@
             }
 
             .theme-toggle:hover {
-                background: var(--border-color);
+                background: var(--bg-tertiary);
+                border-color: var(--border-focus);
             }
 
             /* 模块容器 */
@@ -175,9 +342,10 @@
                 background: var(--bg-secondary);
                 border-radius: 12px;
                 padding: 24px;
-                box-shadow: var(--card-shadow);
+                box-shadow: var(--shadow-lg);
                 border: 1px solid var(--border-color);
-                min-height: 500px;
+                position: relative;
+                z-index: 5;
             }
 
             .module {
@@ -209,60 +377,106 @@
             }
 
             .stat-card {
-                background: var(--bg-secondary);
+                background: var(--bg-card);
                 border: 1px solid var(--border-color);
-                border-radius: 8px;
+                border-radius: 12px;
                 padding: 20px;
-                transition: all 0.2s ease;
-                box-shadow: var(--card-shadow);
+                transition: all 0.3s ease;
+                box-shadow: var(--shadow-sm);
+                position: relative;
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
             }
 
             .stat-card:hover {
-                box-shadow: var(--card-shadow-hover);
-            }
-
-            .stat-icon {
-                width: 40px;
-                height: 40px;
-                border-radius: 8px;
-                background: var(--bg-tertiary);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                margin-bottom: 12px;
-                color: var(--primary-blue);
-            }
-
-            .stat-icon svg {
-                width: 20px;
-                height: 20px;
+                box-shadow: var(--shadow-lg);
+                transform: translateY(-2px);
             }
 
             .stat-label {
                 font-size: 12px;
                 color: var(--text-muted);
-                margin-bottom: 6px;
                 font-weight: 500;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+
+            .stat-content {
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                gap: 16px;
+            }
+
+            .stat-icon {
+                width: 56px;
+                height: 56px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex-shrink: 0;
+                flex-grow: 0;
+                transition: all 0.3s ease;
+            }
+
+            .stat-card:hover .stat-icon {
+                transform: scale(1.1) rotate(5deg);
+            }
+
+            .stat-icon svg {
+                width: 28px;
+                height: 28px;
+            }
+
+            .stat-info {
+                flex: 1;
+                min-width: 0;
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
             }
 
             .stat-value {
-                font-size: 24px;
-                font-weight: 600;
-                color: var(--text-primary);
-                margin-bottom: 4px;
+                font-size: 20px;
+                font-weight: 700;
+                color: var(--text-secondary);
+                line-height: 1;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
 
             .stat-detail {
-                display: flex;
-                gap: 12px;
                 font-size: 11px;
                 color: var(--text-muted);
             }
 
-            .stat-detail-item {
-                display: flex;
-                align-items: center;
-                gap: 4px;
+            /* 不同卡片的图标颜色 - 更鲜艳的渐变 */
+            .stat-card.connections .stat-icon {
+                background: linear-gradient(135deg, #60a5fa, #3b82f6, #2563eb);
+                color: #ffffff;
+            }
+
+            .stat-card.messages .stat-icon {
+                background: linear-gradient(135deg, #34d399, #10b981, #059669);
+                color: #ffffff;
+            }
+
+            .stat-card.bytes .stat-icon {
+                background: linear-gradient(135deg, #fbbf24, #f59e0b, #d97706);
+                color: #ffffff;
+            }
+
+            .stat-card.retained .stat-icon {
+                background: linear-gradient(135deg, #a78bfa, #8b5cf6, #7c3aed);
+                color: #ffffff;
+            }
+
+            .stat-card.subscriptions .stat-icon {
+                background: linear-gradient(135deg, #f472b6, #ec4899, #db2777);
+                color: #ffffff;
             }
 
             /* 两列布局 */
@@ -273,14 +487,15 @@
             }
 
             .panel {
-                background: var(--bg-secondary);
+                background: var(--bg-tertiary);
                 border: 1px solid var(--border-color);
                 border-radius: 8px;
                 overflow: hidden;
+                box-shadow: var(--shadow-sm);
             }
 
             .panel-header {
-                background: var(--bg-tertiary);
+                background: var(--bg-card);
                 padding: 12px 16px;
                 display: flex;
                 justify-content: space-between;
@@ -309,7 +524,7 @@
             }
 
             .panel-btn {
-                background: var(--bg-secondary);
+                background: var(--bg-card);
                 border: 1px solid var(--border-color);
                 border-radius: 4px;
                 padding: 4px 10px;
@@ -323,6 +538,7 @@
                 background: var(--primary-blue);
                 color: #ffffff;
                 border-color: var(--primary-blue);
+                box-shadow: var(--shadow-sm);
             }
 
             .panel-content {
@@ -354,13 +570,20 @@
             .log-item {
                 padding: 10px;
                 margin-bottom: 6px;
-                background: var(--bg-tertiary);
+                background: var(--bg-card);
                 border-radius: 4px;
                 font-family: var(--font-mono);
                 font-size: 11px;
                 display: flex;
                 gap: 10px;
                 align-items: flex-start;
+                border: 1px solid transparent;
+                transition: all 0.2s ease;
+            }
+
+            .log-item:hover {
+                background: var(--bg-tertiary);
+                border-color: var(--border-color);
             }
 
             .log-time {
@@ -382,13 +605,15 @@
                 gap: 10px;
                 padding: 10px;
                 margin-bottom: 6px;
-                background: var(--bg-tertiary);
+                background: var(--bg-card);
                 border-radius: 4px;
                 transition: all 0.2s ease;
+                border: 1px solid transparent;
             }
 
             .client-item:hover {
-                background: var(--border-color);
+                background: var(--bg-tertiary);
+                border-color: var(--border-color);
             }
 
             .client-icon {
@@ -438,20 +663,22 @@
                 display: grid;
                 grid-template-columns: 240px 1fr;
                 gap: 16px;
-                height: 450px;
             }
 
             .subscribe-panel {
-                background: var(--bg-secondary);
+                background: var(--bg-tertiary);
                 border: 1px solid var(--border-color);
                 border-radius: 8px;
                 overflow: hidden;
                 display: flex;
                 flex-direction: column;
+                min-height: 300px;
+                max-height: 500px;
+                box-shadow: var(--shadow-sm);
             }
 
             .subscribe-header {
-                background: var(--bg-tertiary);
+                background: var(--bg-card);
                 padding: 12px 16px;
                 display: flex;
                 justify-content: space-between;
@@ -478,10 +705,12 @@
                 align-items: center;
                 justify-content: center;
                 transition: all 0.2s ease;
+                box-shadow: var(--shadow-sm);
             }
 
             .add-sub-btn:hover {
                 opacity: 0.9;
+                box-shadow: var(--shadow-md);
             }
 
             .subscribe-list {
@@ -490,28 +719,79 @@
                 padding: 8px;
             }
 
+            .subscribe-list::-webkit-scrollbar {
+                width: 4px;
+            }
+
+            .subscribe-list::-webkit-scrollbar-track {
+                background: transparent;
+            }
+
+            .subscribe-list::-webkit-scrollbar-thumb {
+                background: var(--border-color);
+                border-radius: 2px;
+            }
+
+            .subscribe-list::-webkit-scrollbar-thumb:hover {
+                background: var(--text-muted);
+            }
+
             .subscribe-item {
-                padding: 10px;
+                padding: 8px 10px;
                 margin-bottom: 6px;
-                background: var(--bg-tertiary);
+                background: var(--bg-card);
                 border-radius: 4px;
-                cursor: pointer;
                 transition: all 0.2s ease;
-                position: relative;
+                border: 1px solid transparent;
+                display: flex;
+                align-items: center;
+                gap: 8px;
             }
 
             .subscribe-item:hover {
-                background: var(--border-color);
+                background: var(--bg-tertiary);
+                border-color: var(--border-color);
             }
 
             .subscribe-item.active {
-                background: var(--primary-blue);
-                color: #ffffff;
+                background: rgba(33, 150, 243, 0.1);
+                border-color: var(--primary-blue);
             }
 
-            .subscribe-item.active .subscribe-topic,
-            .subscribe-item.active .subscribe-qos {
+            .subscribe-checkbox {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid var(--text-muted);
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex-shrink: 0;
+                transition: all 0.2s ease;
+            }
+
+            .subscribe-checkbox.checked {
+                background: var(--primary-blue);
+                border-color: var(--primary-blue);
+            }
+
+            .subscribe-checkbox svg {
+                width: 10px;
+                height: 10px;
                 color: #ffffff;
+                opacity: 0;
+                transition: opacity 0.2s ease;
+            }
+
+            .subscribe-checkbox.checked svg {
+                opacity: 1;
+            }
+
+            .subscribe-content {
+                flex: 1;
+                min-width: 0;
+                cursor: pointer;
             }
 
             .subscribe-topic {
@@ -527,33 +807,62 @@
                 color: var(--text-muted);
             }
 
-            .subscribe-hint {
-                position: absolute;
-                right: 8px;
-                top: 50%;
-                transform: translateY(-50%);
-                font-size: 9px;
-                opacity: 0;
-                transition: opacity 0.2s ease;
+            .subscribe-delete {
+                width: 20px;
+                height: 20px;
+                border-radius: 3px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: var(--text-muted);
+                transition: all 0.2s ease;
+                flex-shrink: 0;
             }
 
-            .subscribe-item:hover .subscribe-hint {
-                opacity: 1;
+            .subscribe-delete:hover {
+                background: var(--error-red);
+                color: #ffffff;
+            }
+
+            .subscribe-delete svg {
+                width: 12px;
+                height: 12px;
             }
 
             .message-panel {
                 display: flex;
                 flex-direction: column;
                 gap: 12px;
+                min-height: 300px;
             }
 
             .message-list {
                 flex: 1;
-                background: var(--bg-secondary);
+                min-height: 300px;
+                max-height: 500px;
+                background: var(--bg-tertiary);
                 border: 1px solid var(--border-color);
                 border-radius: 8px;
                 padding: 12px;
                 overflow-y: auto;
+            }
+
+            .message-list::-webkit-scrollbar {
+                width: 4px;
+            }
+
+            .message-list::-webkit-scrollbar-track {
+                background: transparent;
+            }
+
+            .message-list::-webkit-scrollbar-thumb {
+                background: var(--border-color);
+                border-radius: 2px;
+            }
+
+            .message-list::-webkit-scrollbar-thumb:hover {
+                background: var(--text-muted);
             }
 
             .message-item {
@@ -612,13 +921,14 @@
             }
 
             .message-body {
-                background: var(--bg-tertiary);
+                background: var(--bg-card);
                 padding: 8px 10px;
                 border-radius: 4px;
                 font-family: var(--font-mono);
                 font-size: 11px;
                 color: var(--text-primary);
                 word-break: break-word;
+                border: 1px solid var(--border-color);
             }
 
             .message-body.hex {
@@ -626,7 +936,7 @@
             }
 
             .publish-area {
-                background: var(--bg-secondary);
+                background: var(--bg-tertiary);
                 border: 1px solid var(--border-color);
                 border-radius: 8px;
                 padding: 12px;
@@ -634,7 +944,7 @@
 
             .publish-form {
                 display: grid;
-                grid-template-columns: repeat(4, 1fr);
+                grid-template-columns: 2fr 1fr 1fr 1fr;
                 gap: 10px;
                 margin-bottom: 10px;
             }
@@ -654,26 +964,28 @@
             .form-input,
             .form-select {
                 padding: 8px 10px;
-                background: var(--bg-secondary);
+                background: #ffffff;
                 border: 1px solid var(--border-color);
                 border-radius: 4px;
                 color: var(--text-primary);
                 font-size: 13px;
                 transition: all 0.2s ease;
+                outline: none;
             }
 
             .form-input:focus,
             .form-select:focus {
-                outline: none;
-                border-color: var(--primary-blue);
-                box-shadow: 0 0 0 2px var(--accent-glow);
+                border-color: var(--border-focus);
+                box-shadow: var(--input-shadow);
+                transform: translateY(-1px);
+                background: #ffffff;
             }
 
             .form-textarea {
                 width: 100%;
                 min-height: 60px;
                 padding: 8px 10px;
-                background: var(--bg-secondary);
+                background: #ffffff;
                 border: 1px solid var(--border-color);
                 border-radius: 4px;
                 color: var(--text-primary);
@@ -681,12 +993,14 @@
                 font-size: 11px;
                 resize: vertical;
                 transition: all 0.2s ease;
+                outline: none;
             }
 
             .form-textarea:focus {
-                outline: none;
-                border-color: var(--primary-blue);
-                box-shadow: 0 0 0 2px var(--accent-glow);
+                border-color: var(--border-focus);
+                box-shadow: var(--input-shadow);
+                transform: translateY(-1px);
+                background: #ffffff;
             }
 
             .publish-btn {
@@ -700,10 +1014,12 @@
                 cursor: pointer;
                 transition: all 0.2s ease;
                 align-self: flex-start;
+                box-shadow: var(--shadow-sm);
             }
 
             .publish-btn:hover {
                 opacity: 0.9;
+                box-shadow: var(--shadow-md);
             }
 
             /* 配置模块 */
@@ -754,7 +1070,7 @@
                 }
 
                 .subscribe-panel {
-                    max-height: 180px;
+                    max-height: 300px;
                 }
             }
 
@@ -778,32 +1094,6 @@
 
                 .config-form {
                     grid-template-columns: 1fr;
-                }
-            }
-
-            /* 状态指示器 */
-            .status-dot {
-                width: 6px;
-                height: 6px;
-                border-radius: 50%;
-                background: var(--accent-cyan);
-                box-shadow: 0 0 8px var(--accent-cyan);
-                animation: pulse 2s infinite;
-            }
-
-            .status-dot.disconnected {
-                background: var(--text-muted);
-                box-shadow: none;
-                animation: none;
-            }
-
-            @keyframes pulse {
-                0%,
-                100% {
-                    opacity: 1;
-                }
-                50% {
-                    opacity: 0.6;
                 }
             }
 
@@ -832,8 +1122,9 @@
                 padding: 24px;
                 max-width: 400px;
                 width: 90%;
-                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+                box-shadow: var(--shadow-xl);
                 animation: modalIn 0.2s ease;
+                border: 1px solid var(--border-color);
             }
 
             @keyframes modalIn {
@@ -881,28 +1172,15 @@
             }
 
             .btn-secondary {
-                background: var(--bg-tertiary);
+                background: var(--bg-card);
                 color: var(--text-primary);
+                border: 1px solid var(--border-color);
             }
 
             .btn-secondary:hover {
-                background: var(--border-color);
-            }
-
-            /* 连接状态 */
-            .connection-status {
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                padding: 6px 12px;
                 background: var(--bg-tertiary);
-                border-radius: 6px;
             }
 
-            .connection-status-text {
-                font-size: 12px;
-                font-weight: 500;
-            }
         </style>
     </head>
     <body>
@@ -925,25 +1203,32 @@
                             <path
                                 d="M12 3C7.5 3 3.75 4.5 1 7l2 2c2-2 4.5-3 7-3s5 1 7 3l2-2c-2.75-2.5-6.5-4-11-4z"
                             />
-                            <path d="M12 9c-2.5 0-4.5 1-6 2.5l2 2c1-1 2.5-1.5 4-1.5s3 0.5 4 1.5l2-2c-1.5-1.5-3.5-2.5-6-2.5z" />
-                            <path d="M12 15c-1 0-2 0.5-2.5 1l2.5 2.5 2.5-2.5c-0.5-0.5-1.5-1-2.5-1z" />
+                            <path
+                                d="M12 9c-2.5 0-4.5 1-6 2.5l2 2c1-1 2.5-1.5 4-1.5s3 0.5 4 1.5l2-2c-1.5-1.5-3.5-2.5-6-2.5z"
+                            />
+                            <path
+                                d="M12 15c-1 0-2 0.5-2.5 1l2.5 2.5 2.5-2.5c-0.5-0.5-1.5-1-2.5-1z"
+                            />
                         </svg>
-                        Broker 控制台
+                        MQTT Broker
                     </h1>
                     <nav class="header-nav">
-                        <div class="nav-item active" data-module="home">首页</div>
+                        <div class="nav-item active" data-module="home">
+                            首页
+                        </div>
                         <div class="nav-item" data-module="messages">消息</div>
                         <div class="nav-item" data-module="logs">日志</div>
                         <div class="nav-item" data-module="config">配置</div>
                     </nav>
                     <div class="header-controls">
-                        <div class="connection-status">
-                            <div class="status-dot" id="statusDot"></div>
-                            <span class="connection-status-text" id="connectionStatus"
-                                >连接中...</span
-                            >
-                        </div>
-                        <button class="connection-btn" id="connectionBtn">断开</button>
+                        <button
+                            class="connection-btn"
+                            id="connectionBtn"
+                            title="点击连接"
+                        >
+                            <span class="btn-icon"></span>
+                            <span class="btn-text">连接</span>
+                        </button>
                         <button class="theme-toggle" id="themeToggle">
                             <svg
                                 xmlns="http://www.w3.org/2000/svg"
@@ -971,55 +1256,46 @@
                 </div>
             </header>
 
+            <!-- 通知框容器 -->
+            <div id="notificationContainer"></div>
+
             <!-- 主内容区 -->
             <main class="module-container">
                 <!-- 首页模块 -->
                 <div class="module active" id="homeModule">
                     <div class="stats-grid">
-                        <div class="stat-card">
-                            <div class="stat-icon">
-                                <svg
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                >
-                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                                    <circle cx="9" cy="7" r="4" />
-                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                                </svg>
-                            </div>
+                        <div class="stat-card connections">
                             <div class="stat-label">活跃连接</div>
-                            <div class="stat-value" id="statConns">0</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-icon">
-                                <svg
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                >
-                                    <path
-                                        d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
-                                    />
-                                </svg>
+                            <div class="stat-content">
+                                <div class="stat-icon">
+                                    <svg
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                    >
+                                        <path
+                                            d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"
+                                        />
+                                        <circle cx="9" cy="7" r="4" />
+                                        <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                                        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                                    </svg>
+                                </div>
+                                <div class="stat-info">
+                                    <div class="stat-value" id="statConns">0</div>
+                                </div>
                             </div>
+                        </div>
+                        <div class="stat-card messages">
                             <div class="stat-label">消息统计</div>
-                            <div class="stat-value" id="statMsgs">0</div>
-                            <div class="stat-detail">
-                                <div class="stat-detail-item">
+                            <div class="stat-content">
+                                <div class="stat-icon">
                                     <svg
                                         xmlns="http://www.w3.org/2000/svg"
-                                        width="10"
-                                        height="10"
                                         viewBox="0 0 24 24"
                                         fill="none"
                                         stroke="currentColor"
@@ -1027,55 +1303,23 @@
                                         stroke-linecap="round"
                                         stroke-linejoin="round"
                                     >
-                                        <path d="M5 12h14" />
-                                        <path d="M12 5v14" />
+                                        <path
+                                            d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+                                        />
                                     </svg>
-                                    <span id="statRxMsgsDetail">0</span>
                                 </div>
-                                <div class="stat-detail-item">
-                                    <svg
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        width="10"
-                                        height="10"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="2"
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                    >
-                                        <path d="M5 12h14" />
-                                    </svg>
-                                    <span id="statTxMsgsDetail">0</span>
+                                <div class="stat-info">
+                                    <div class="stat-value" id="statMsgs">0 / 0</div>
+                                    <div class="stat-detail">接收 / 发送</div>
                                 </div>
                             </div>
                         </div>
-                        <div class="stat-card">
-                            <div class="stat-icon">
-                                <svg
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                >
-                                    <path
-                                        d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"
-                                    />
-                                    <path d="M12 12v9" />
-                                    <path d="m16 16-4-4-4 4" />
-                                </svg>
-                            </div>
+                        <div class="stat-card bytes">
                             <div class="stat-label">字节统计</div>
-                            <div class="stat-value" id="statBytes">0 B</div>
-                            <div class="stat-detail">
-                                <div class="stat-detail-item">
+                            <div class="stat-content">
+                                <div class="stat-icon">
                                     <svg
                                         xmlns="http://www.w3.org/2000/svg"
-                                        width="10"
-                                        height="10"
                                         viewBox="0 0 24 24"
                                         fill="none"
                                         stroke="currentColor"
@@ -1083,70 +1327,70 @@
                                         stroke-linecap="round"
                                         stroke-linejoin="round"
                                     >
-                                        <path d="M5 12h14" />
-                                        <path d="M12 5v14" />
+                                        <path
+                                            d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"
+                                        />
+                                        <path d="M12 12v9" />
+                                        <path d="m16 16-4-4-4 4" />
                                     </svg>
-                                    <span id="statRxBytesDetail">0 B</span>
                                 </div>
-                                <div class="stat-detail-item">
-                                    <svg
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        width="10"
-                                        height="10"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="2"
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                    >
-                                        <path d="M5 12h14" />
-                                    </svg>
-                                    <span id="statTxBytesDetail">0 B</span>
+                                <div class="stat-info">
+                                    <div class="stat-value" id="statBytes">
+                                        12  / 333 
+                                    </div>
+                                    <div class="stat-detail">接收 / 发送</div>
                                 </div>
                             </div>
                         </div>
-                        <div class="stat-card">
-                            <div class="stat-icon">
-                                <svg
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                >
-                                    <path
-                                        d="M19 21v-8a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v8"
-                                    />
-                                    <path
-                                        d="M4 10h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2z"
-                                    />
-                                    <line x1="12" x2="12" y1="18" y2="18" />
-                                </svg>
-                            </div>
+                        <div class="stat-card retained">
                             <div class="stat-label">保留消息</div>
-                            <div class="stat-value" id="statRetained">0</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-icon">
-                                <svg
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                >
-                                    <path
-                                        d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"
-                                    />
-                                </svg>
+                            <div class="stat-content">
+                                <div class="stat-icon">
+                                    <svg
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                    >
+                                        <path
+                                            d="M19 21v-8a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v8"
+                                        />
+                                        <path
+                                            d="M4 10h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2z"
+                                        />
+                                        <line x1="12" x2="12" y1="18" y2="18" />
+                                    </svg>
+                                </div>
+                                <div class="stat-info">
+                                    <div class="stat-value" id="statRetained">0</div>
+                                </div>
                             </div>
+                        </div>
+                        <div class="stat-card subscriptions">
                             <div class="stat-label">活跃订阅</div>
-                            <div class="stat-value" id="statSubs">0</div>
+                            <div class="stat-content">
+                                <div class="stat-icon">
+                                    <svg
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                    >
+                                        <path
+                                            d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"
+                                        />
+                                    </svg>
+                                </div>
+                                <div class="stat-info">
+                                    <div class="stat-value" id="statSubs">0</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -1174,7 +1418,9 @@
                                     Broker 日志
                                 </div>
                                 <div class="panel-actions">
-                                    <button class="panel-btn" id="clearLogsBtn">清空</button>
+                                    <button class="panel-btn" id="clearLogsBtn">
+                                        清空
+                                    </button>
                                 </div>
                             </div>
                             <div class="panel-content" id="logsPanel">
@@ -1211,17 +1457,29 @@
                                         stroke-linecap="round"
                                         stroke-linejoin="round"
                                     >
-                                        <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                                        <rect
+                                            x="2"
+                                            y="3"
+                                            width="20"
+                                            height="14"
+                                            rx="2"
+                                            ry="2"
+                                        />
                                         <line x1="8" x2="8" y1="21" y2="21" />
                                         <line x1="16" x2="16" y1="21" y2="21" />
                                     </svg>
                                     客户端列表
                                 </div>
                                 <div class="panel-actions">
-                                    <button class="panel-btn" id="refreshClientsBtn">
+                                    <button
+                                        class="panel-btn"
+                                        id="refreshClientsBtn"
+                                    >
                                         刷新
                                     </button>
-                                    <button class="panel-btn" id="kickAllBtn">踢掉</button>
+                                    <button class="panel-btn" id="kickAllBtn">
+                                        踢掉
+                                    </button>
                                 </div>
                             </div>
                             <div class="panel-content" id="clientsPanel">
@@ -1244,8 +1502,18 @@
                                                 rx="2"
                                                 ry="2"
                                             />
-                                            <line x1="8" x2="8" y1="21" y2="21" />
-                                            <line x1="16" x2="16" y1="21" y2="21" />
+                                            <line
+                                                x1="8"
+                                                x2="8"
+                                                y1="21"
+                                                y2="21"
+                                            />
+                                            <line
+                                                x1="16"
+                                                x2="16"
+                                                y1="21"
+                                                y2="21"
+                                            />
                                         </svg>
                                     </div>
                                     <div class="empty-text">暂无客户端</div>
@@ -1261,7 +1529,9 @@
                         <div class="subscribe-panel">
                             <div class="subscribe-header">
                                 <div class="subscribe-title">订阅列表</div>
-                                <button class="add-sub-btn" id="addSubBtn">+</button>
+                                <button class="add-sub-btn" id="addSubBtn">
+                                    +
+                                </button>
                             </div>
                             <div class="subscribe-list" id="subscribeList">
                                 <div class="empty-state">
@@ -1276,8 +1546,18 @@
                                             stroke-linejoin="round"
                                         >
                                             <circle cx="12" cy="12" r="10" />
-                                            <line x1="12" x2="12" y1="8" y2="12" />
-                                            <line x1="12" x2="12.01" y1="16" y2="16" />
+                                            <line
+                                                x1="12"
+                                                x2="12"
+                                                y1="8"
+                                                y2="12"
+                                            />
+                                            <line
+                                                x1="12"
+                                                x2="12.01"
+                                                y1="16"
+                                                y2="16"
+                                            />
                                         </svg>
                                     </div>
                                     <div class="empty-text">暂无订阅</div>
@@ -1298,7 +1578,9 @@
                                             stroke-linecap="round"
                                             stroke-linejoin="round"
                                         >
-                                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                                            <path
+                                                d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+                                            />
                                         </svg>
                                     </div>
                                     <div class="empty-text">暂无消息</div>
@@ -1320,7 +1602,10 @@
                                     </div>
                                     <div class="form-group">
                                         <label class="form-label">QoS</label>
-                                        <select class="form-select" id="publishQos">
+                                        <select
+                                            class="form-select"
+                                            id="publishQos"
+                                        >
                                             <option value="0">0</option>
                                             <option value="1">1</option>
                                             <option value="2">2</option>
@@ -1328,16 +1613,26 @@
                                     </div>
                                     <div class="form-group">
                                         <label class="form-label">格式</label>
-                                        <select class="form-select" id="publishFormat">
+                                        <select
+                                            class="form-select"
+                                            id="publishFormat"
+                                        >
                                             <option value="text">文本</option>
                                             <option value="json">JSON</option>
-                                            <option value="hex">十六进制</option>
-                                            <option value="base64">Base64</option>
+                                            <option value="hex">
+                                                十六进制
+                                            </option>
+                                            <option value="base64">
+                                                Base64
+                                            </option>
                                         </select>
                                     </div>
                                     <div class="form-group">
                                         <label class="form-label">保留</label>
-                                        <select class="form-select" id="publishRetain">
+                                        <select
+                                            class="form-select"
+                                            id="publishRetain"
+                                        >
                                             <option value="false">否</option>
                                             <option value="true">是</option>
                                         </select>
@@ -1383,12 +1678,19 @@
                                 系统日志
                             </div>
                             <div class="panel-actions">
-                                <button class="panel-btn" id="clearSystemLogsBtn">
+                                <button
+                                    class="panel-btn"
+                                    id="clearSystemLogsBtn"
+                                >
                                     清空
                                 </button>
                             </div>
                         </div>
-                        <div class="panel-content" id="systemLogsPanel" style="max-height: 560px">
+                        <div
+                            class="panel-content"
+                            id="systemLogsPanel"
+                            style="max-height: 560px"
+                        >
                             <div class="empty-state">
                                 <div class="empty-icon">
                                     <svg
@@ -1449,8 +1751,12 @@
                     </select>
                 </div>
                 <div class="modal-actions">
-                    <button class="btn btn-secondary" id="cancelSubBtn">取消</button>
-                    <button class="btn btn-primary" id="confirmSubBtn">确认</button>
+                    <button class="btn btn-secondary" id="cancelSubBtn">
+                        取消
+                    </button>
+                    <button class="btn btn-primary" id="confirmSubBtn">
+                        确认
+                    </button>
                 </div>
             </div>
         </div>
@@ -1462,12 +1768,14 @@
                 apiUrl: "http://192.168.116.217:8080",
                 username: "admin",
                 password: "22182666",
-                autoConnect: true
+                autoConnect: true,
             };
 
             // ==================== 应用状态 ====================
             let state = {
                 connected: false,
+                connecting: false,
+                manualDisconnect: false,
                 mqttClient: null,
                 currentModule: "home",
                 theme: "light",
@@ -1477,7 +1785,7 @@
                 subscriptions: [],
                 messages: [],
                 config: {},
-                topicHistory: new Set()
+                topicHistory: new Set(),
             };
 
             // ==================== 工具函数 ====================
@@ -1486,7 +1794,11 @@
                 const k = 1024;
                 const sizes = ["B", "KB", "MB", "GB"];
                 const i = Math.floor(Math.log(bytes) / Math.log(k));
-                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+                return (
+                    parseFloat((bytes / Math.pow(k, i)).toFixed(2)) +
+                    " " +
+                    sizes[i]
+                );
             }
 
             function formatTime(timestamp) {
@@ -1501,37 +1813,50 @@
             }
 
             function getAuthHeader() {
-                const credentials = btoa(`${CONFIG.username}:${CONFIG.password}`);
+                const credentials = btoa(
+                    `${CONFIG.username}:${CONFIG.password}`,
+                );
                 return `Basic ${credentials}`;
             }
 
             // ==================== MQTT 客户端 ====================
             function initMqttClient() {
-                const clientId = "dashboard_" + Math.random().toString(16).substr(2, 8);
+                // 设置连接中状态
+                state.connecting = true;
+                updateConnectionUI();
+
+                const clientId =
+                    "mqtt_" + Math.random().toString(16).substr(2, 8);
                 state.mqttClient = mqtt.connect(CONFIG.brokerUrl, {
                     clientId: clientId,
                     username: CONFIG.username,
                     password: CONFIG.password,
                     clean: true,
                     connectTimeout: 10000,
-                    reconnectPeriod: 5000
+                    reconnectPeriod: state.manualDisconnect ? 0 : 5000, // 人为断开时不重连
                 });
 
                 state.mqttClient.on("connect", () => {
                     console.log("MQTT 已连接");
                     state.connected = true;
+                    state.connecting = false;
                     updateConnectionUI();
+                    showNotification("连接成功", "success");
                     subscribeToSystemTopics();
                 });
 
                 state.mqttClient.on("close", () => {
                     console.log("MQTT 已断开");
                     state.connected = false;
+                    state.connecting = false;
                     updateConnectionUI();
                 });
 
                 state.mqttClient.on("error", (err) => {
                     console.error("MQTT 错误:", err);
+                    state.connecting = false;
+                    showNotification(`连接失败: ${err.message || "未知错误"}`, "error");
+                    updateConnectionUI();
                 });
 
                 state.mqttClient.on("message", (topic, message) => {
@@ -1547,7 +1872,7 @@
                     { topic: "$sys/broker/stats", qos: 0 },
                     { topic: "$sys/broker/logs", qos: 0 },
                     { topic: "$sys/broker/clients/connected", qos: 0 },
-                    { topic: "$sys/broker/clients/disconnected", qos: 0 }
+                    { topic: "$sys/broker/clients/disconnected", qos: 0 },
                 ];
 
                 systemTopics.forEach(({ topic, qos }) => {
@@ -1559,12 +1884,14 @@
                 });
 
                 // 重新订阅用户主题
-                state.subscriptions.forEach(({ topic, qos }) => {
-                    state.mqttClient.subscribe(topic, { qos }, (err) => {
-                        if (err) {
-                            console.error(`重新订阅 ${topic} 失败:`, err);
-                        }
-                    });
+                state.subscriptions.forEach(({ topic, qos, active }) => {
+                    if (active) {
+                        state.mqttClient.subscribe(topic, { qos }, (err) => {
+                            if (err) {
+                                console.error(`重新订阅 ${topic} 失败:`, err);
+                            }
+                        });
+                    }
                 });
             }
 
@@ -1589,9 +1916,13 @@
                     } else {
                         // 用户订阅的消息
                         const activeSub = state.subscriptions.find((s) =>
-                            topic.match(s.topic.replace("+", "[^/]+").replace("#", ".*"))
+                            topic.match(
+                                s.topic
+                                    .replace("+", "[^/]+")
+                                    .replace("#", ".*"),
+                            ),
                         );
-                        if (activeSub || state.subscriptions.some((s) => s.topic === topic)) {
+                        if (activeSub && activeSub.active) {
                             addMessage(topic, message);
                         }
                     }
@@ -1610,26 +1941,28 @@
                     connsElem.textContent = stats.conns.toLocaleString();
                 }
 
-                // 更新消息统计（合并显示）
+                // 更新消息统计（接收/发送格式）
                 const msgsElem = document.getElementById("statMsgs");
-                const rxMsgsElem = document.getElementById("statRxMsgsDetail");
-                const txMsgsElem = document.getElementById("statTxMsgsDetail");
-                if (stats.rx_msgs !== undefined && stats.tx_msgs !== undefined) {
-                    const totalMsgs = stats.rx_msgs + stats.tx_msgs;
-                    msgsElem.textContent = totalMsgs.toLocaleString();
-                    rxMsgsElem.textContent = "收 " + stats.rx_msgs.toLocaleString();
-                    txMsgsElem.textContent = "发 " + stats.tx_msgs.toLocaleString();
+                if (
+                    stats.rx_msgs !== undefined &&
+                    stats.tx_msgs !== undefined
+                ) {
+                    msgsElem.textContent =
+                        stats.rx_msgs.toLocaleString() +
+                        " / " +
+                        stats.tx_msgs.toLocaleString();
                 }
 
-                // 更新字节统计（合并显示）
+                // 更新字节统计（接收/发送格式）
                 const bytesElem = document.getElementById("statBytes");
-                const rxBytesElem = document.getElementById("statRxBytesDetail");
-                const txBytesElem = document.getElementById("statTxBytesDetail");
-                if (stats.rx_bytes !== undefined && stats.tx_bytes !== undefined) {
-                    const totalBytes = stats.rx_bytes + stats.tx_bytes;
-                    bytesElem.textContent = formatBytes(totalBytes);
-                    rxBytesElem.textContent = "收 " + formatBytes(stats.rx_bytes);
-                    txBytesElem.textContent = "发 " + formatBytes(stats.tx_bytes);
+                if (
+                    stats.rx_bytes !== undefined &&
+                    stats.tx_bytes !== undefined
+                ) {
+                    bytesElem.textContent =
+                        formatBytes(stats.rx_bytes) +
+                        " / " +
+                        formatBytes(stats.tx_bytes);
                 }
 
                 // 更新保留消息
@@ -1649,7 +1982,7 @@
             function addLog(message) {
                 state.logs.unshift({
                     time: Date.now(),
-                    message: message
+                    message: message,
                 });
 
                 // 只保留最后 200 条
@@ -1683,7 +2016,7 @@
                         <div class="log-time">${formatTime(log.time)}</div>
                         <div class="log-message">${log.message}</div>
                     </div>
-                `
+                `,
                     )
                     .join("");
             }
@@ -1738,23 +2071,26 @@
                                 <div class="client-details">
                                     <span>${client.ip}</span>
                                     <span class="client-type">${
-                            client.type === "tcp" ? "TCP" : "WS"
-                        }</span>
+                                        client.type === "tcp" ? "TCP" : "WS"
+                                    }</span>
                                 </div>
                             </div>
                         </div>
-                    `
+                    `,
                     )
                     .join("");
             }
 
             async function refreshClients() {
                 try {
-                    const response = await fetch(`${CONFIG.apiUrl}/api/clients`, {
-                        headers: {
-                            Authorization: getAuthHeader()
-                        }
-                    });
+                    const response = await fetch(
+                        `${CONFIG.apiUrl}/api/clients`,
+                        {
+                            headers: {
+                                Authorization: getAuthHeader(),
+                            },
+                        },
+                    );
 
                     if (response.ok) {
                         const clients = await response.json();
@@ -1779,7 +2115,7 @@
                 }
 
                 const confirmed = confirm(
-                    `确定要断开所有 ${clients.length} 个客户端吗？`
+                    `确定要断开所有 ${clients.length} 个客户端吗？`,
                 );
                 if (!confirmed) return;
 
@@ -1788,8 +2124,8 @@
                         await fetch(`${CONFIG.apiUrl}/api/kick/${client.id}`, {
                             method: "POST",
                             headers: {
-                                Authorization: getAuthHeader()
-                            }
+                                Authorization: getAuthHeader(),
+                            },
                         });
                     } catch (err) {
                         console.error(`断开客户端 ${client.id} 失败:`, err);
@@ -1799,7 +2135,9 @@
 
             // ==================== 订阅管理 ====================
             function addSubscription(topic, qos) {
-                const exists = state.subscriptions.find((s) => s.topic === topic);
+                const exists = state.subscriptions.find(
+                    (s) => s.topic === topic,
+                );
                 if (exists) {
                     alert("该主题已存在");
                     return;
@@ -1820,7 +2158,9 @@
             }
 
             function removeSubscription(topic) {
-                const index = state.subscriptions.findIndex((s) => s.topic === topic);
+                const index = state.subscriptions.findIndex(
+                    (s) => s.topic === topic,
+                );
                 if (index === -1) return;
 
                 state.subscriptions.splice(index, 1);
@@ -1834,12 +2174,40 @@
                 }
 
                 updateSubscriptionsList();
+                filterMessages();
             }
 
             function toggleSubscription(topic) {
                 const sub = state.subscriptions.find((s) => s.topic === topic);
                 if (sub) {
                     sub.active = !sub.active;
+
+                    if (state.mqttClient && state.connected) {
+                        if (sub.active) {
+                            state.mqttClient.subscribe(
+                                sub.topic,
+                                { qos: sub.qos },
+                                (err) => {
+                                    if (err) {
+                                        console.error(
+                                            `订阅 ${sub.topic} 失败:`,
+                                            err,
+                                        );
+                                    }
+                                },
+                            );
+                        } else {
+                            state.mqttClient.unsubscribe(sub.topic, (err) => {
+                                if (err) {
+                                    console.error(
+                                        `取消订阅 ${sub.topic} 失败:`,
+                                        err,
+                                    );
+                                }
+                            });
+                        }
+                    }
+
                     updateSubscriptionsList();
                     filterMessages();
                 }
@@ -1870,24 +2238,45 @@
                         <div class="subscribe-item ${sub.active ? "active" : ""}" data-topic="${
                             sub.topic
                         }">
-                            <div class="subscribe-topic">${sub.topic}</div>
-                            <div class="subscribe-qos">QoS: ${sub.qos}</div>
-                            <div class="subscribe-hint">右键删除</div>
+                            <div class="subscribe-checkbox ${sub.active ? "checked" : ""}" data-topic="${
+                                sub.topic
+                            }">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="20 6 9 17 4 4"></polyline>
+                                </svg>
+                            </div>
+                            <div class="subscribe-content" data-topic="${sub.topic}">
+                                <div class="subscribe-topic">${sub.topic}</div>
+                                <div class="subscribe-qos">QoS: ${sub.qos}</div>
+                            </div>
+                            <div class="subscribe-delete" data-topic="${sub.topic}">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M3 6h18"></path>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                    <line x1="10" y1="11" x2="10" y2="17"></line>
+                                    <line x1="14" y1="11" x2="14" y2="17"></line>
+                                </svg>
+                            </div>
                         </div>
-                    `
+                    `,
                     )
                     .join("");
 
-                // 添加点击事件
-                list.querySelectorAll(".subscribe-item").forEach((item) => {
-                    item.addEventListener("click", () => {
-                        const topic = item.dataset.topic;
-                        toggleSubscription(topic);
-                    });
+                // 添加事件监听
+                list.querySelectorAll(".subscribe-checkbox").forEach(
+                    (checkbox) => {
+                        checkbox.addEventListener("click", (e) => {
+                            e.stopPropagation();
+                            const topic = checkbox.dataset.topic;
+                            toggleSubscription(topic);
+                        });
+                    },
+                );
 
-                    item.addEventListener("contextmenu", (e) => {
-                        e.preventDefault();
-                        const topic = item.dataset.topic;
+                list.querySelectorAll(".subscribe-delete").forEach((delBtn) => {
+                    delBtn.addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        const topic = delBtn.dataset.topic;
                         if (confirm(`确定删除订阅 "${topic}" 吗？`)) {
                             removeSubscription(topic);
                         }
@@ -1901,7 +2290,7 @@
                     topic,
                     message: message.toString(),
                     time: Date.now(),
-                    isBinary: !/^[ -~\t\n\r]+$/.test(message.toString())
+                    isBinary: !/^[ -~\t\n\r]+$/.test(message.toString()),
                 });
 
                 // 只保留最后 100 条消息
@@ -1921,7 +2310,11 @@
                 if (activeSubs.length > 0) {
                     filteredMessages = state.messages.filter((msg) => {
                         return activeSubs.some((sub) =>
-                            msg.topic.match(sub.topic.replace("+", "[^/]+").replace("#", ".*"))
+                            msg.topic.match(
+                                sub.topic
+                                    .replace("+", "[^/]+")
+                                    .replace("#", ".*"),
+                            ),
                         );
                     });
                 }
@@ -1947,16 +2340,18 @@
 
                         if (msg.isBinary) {
                             displayMessage = toHex(
-                                new TextEncoder().encode(msg.message)
+                                new TextEncoder().encode(msg.message),
                             );
                             isHex = true;
                         }
 
                         return `
                             <div class="message-item">
-                                <div class="message-avatar">${
-                                    msg.topic.split("/").pop().substring(0, 2).toUpperCase()
-                                }</div>
+                                <div class="message-avatar">${msg.topic
+                                    .split("/")
+                                    .pop()
+                                    .substring(0, 2)
+                                    .toUpperCase()}</div>
                                 <div class="message-content">
                                     <div class="message-header">
                                         <div class="message-topic">${msg.topic}</div>
@@ -1971,10 +2366,15 @@
             }
 
             async function publishMessage() {
-                const topic = document.getElementById("publishTopic").value.trim();
-                const qos = parseInt(document.getElementById("publishQos").value);
+                const topic = document
+                    .getElementById("publishTopic")
+                    .value.trim();
+                const qos = parseInt(
+                    document.getElementById("publishQos").value,
+                );
                 const format = document.getElementById("publishFormat").value;
-                const retain = document.getElementById("publishRetain").value === "true";
+                const retain =
+                    document.getElementById("publishRetain").value === "true";
                 let payload = document.getElementById("publishPayload").value;
 
                 if (!topic) {
@@ -2009,7 +2409,9 @@
                             }
                             const bytes = [];
                             for (let i = 0; i < hexString.length; i += 2) {
-                                bytes.push(parseInt(hexString.substr(i, 2), 16));
+                                bytes.push(
+                                    parseInt(hexString.substr(i, 2), 16),
+                                );
                             }
                             payload =
                                 "base64:" +
@@ -2026,15 +2428,15 @@
 
                 try {
                     const url = `${CONFIG.apiUrl}/api/publish/${encodeURIComponent(
-                        topic
+                        topic,
                     )}?qos=${qos}&retain=${retain}`;
                     const response = await fetch(url, {
                         method: "POST",
                         headers: {
                             Authorization: getAuthHeader(),
-                            "Content-Type": "text/plain"
+                            "Content-Type": "text/plain",
                         },
-                        body: payload
+                        body: payload,
                     });
 
                     if (response.ok) {
@@ -2059,11 +2461,14 @@
             // ==================== 配置管理 ====================
             async function loadConfig() {
                 try {
-                    const response = await fetch(`${CONFIG.apiUrl}/api/configs`, {
-                        headers: {
-                            Authorization: getAuthHeader()
-                        }
-                    });
+                    const response = await fetch(
+                        `${CONFIG.apiUrl}/api/configs`,
+                        {
+                            headers: {
+                                Authorization: getAuthHeader(),
+                            },
+                        },
+                    );
 
                     if (response.ok) {
                         const config = await response.json();
@@ -2081,75 +2486,109 @@
             function renderConfigForm(config) {
                 const form = document.getElementById("configForm");
                 const configItems = [
-                    { key: "log_level", label: "日志级别", type: "number", min: 0, max: 4 },
+                    {
+                        key: "log_level",
+                        label: "日志级别",
+                        type: "number",
+                        min: 0,
+                        max: 4,
+                    },
                     {
                         key: "stats_interval",
                         label: "统计间隔(秒)",
                         type: "number",
-                        min: 1
+                        min: 1,
                     },
-                    { key: "enable_stats", label: "启用统计", type: "checkbox" },
+                    {
+                        key: "enable_stats",
+                        label: "启用统计",
+                        type: "checkbox",
+                    },
                     { key: "enable_api", label: "启用 API", type: "checkbox" },
                     {
                         key: "port",
                         label: "MQTT 端口",
                         type: "number",
                         min: 1024,
-                        max: 65535
+                        max: 65535,
                     },
                     {
                         key: "api_port",
                         label: "API 端口",
                         type: "number",
                         min: 1024,
-                        max: 65535
+                        max: 65535,
                     },
                     {
                         key: "timeout_ms",
                         label: "超时时间(ms)",
                         type: "number",
-                        min: 1000
+                        min: 1000,
                     },
                     {
                         key: "max_clients",
                         label: "最大客户端数",
                         type: "number",
                         min: 0,
-                        full: true
+                        full: true,
                     },
-                    { key: "max_subs", label: "最大订阅数", type: "number", min: 0 },
+                    {
+                        key: "max_subs",
+                        label: "最大订阅数",
+                        type: "number",
+                        min: 0,
+                    },
                     {
                         key: "max_retained",
                         label: "最大保留消息",
                         type: "number",
-                        min: 0
+                        min: 0,
                     },
                     {
                         key: "rx_buf_sz",
                         label: "接收缓冲区",
                         type: "number",
                         min: 512,
-                        full: true
+                        full: true,
                     },
                     {
                         key: "tx_buf_sz",
                         label: "发送缓冲区",
                         type: "number",
                         min: 512,
-                        full: true
+                        full: true,
                     },
                     {
                         key: "max_payload_len",
                         label: "最大负载长度",
                         type: "number",
                         min: 128,
-                        full: true
+                        full: true,
                     },
                     { key: "use_tls", label: "启用 TLS", type: "checkbox" },
-                    { key: "use_ws", label: "启用 WebSocket", type: "checkbox" },
-                    { key: "username", label: "用户名", type: "text", full: true },
-                    { key: "password", label: "密码", type: "password", full: true },
-                    { key: "api_token", label: "API 令牌", type: "text", full: true }
+                    {
+                        key: "use_ws",
+                        label: "启用 WebSocket",
+                        type: "checkbox",
+                    },
+                    {
+                        key: "username",
+                        label: "用户名",
+                        type: "text",
+                        full: true,
+                    },
+                    {
+                        key: "password",
+                        label: "密码",
+                        type: "password",
+                        full: true,
+                    },
+                    {
+                        key: "api_token",
+                        label: "API 令牌",
+                        type: "text",
+                        full: true,
+                    },
                 ];
 
                 form.innerHTML = configItems
@@ -2204,7 +2643,8 @@
 
                 inputs.forEach((input) => {
                     const key = input.dataset.key;
-                    let value = input.type === "checkbox" ? input.checked : input.value;
+                    let value =
+                        input.type === "checkbox" ? input.checked : input.value;
 
                     if (input.type === "number") {
                         value = parseInt(value) || 0;
@@ -2215,21 +2655,25 @@
 
                 if (
                     !confirm(
-                        "确定要保存配置吗？某些更改可能需要重启 Broker 才能生效。"
+                        "确定要保存配置吗？某些更改可能需要重启 Broker 才能生效。",
                     )
                 ) {
                     return;
                 }
 
                 try {
-                    const response = await fetch(`${CONFIG.apiUrl}/api/configs`, {
-                        method: "POST",
-                        headers: {
-                            Authorization: getAuthHeader(),
-                            "Content-Type": "application/x-www-form-urlencoded"
+                    const response = await fetch(
+                        `${CONFIG.apiUrl}/api/configs`,
+                        {
+                            method: "POST",
+                            headers: {
+                                Authorization: getAuthHeader(),
+                                "Content-Type":
+                                    "application/x-www-form-urlencoded",
+                            },
+                            body: formData.toString(),
                         },
-                        body: formData.toString()
-                    });
+                    );
 
                     if (response.ok) {
                         const result = await response.json();
@@ -2250,29 +2694,81 @@
 
             // ==================== 界面更新 ====================
             function updateConnectionUI() {
-                const dot = document.getElementById("statusDot");
-                const status = document.getElementById("connectionStatus");
                 const btn = document.getElementById("connectionBtn");
+                const btnIcon = btn.querySelector(".btn-icon");
+                const btnText = btn.querySelector(".btn-text");
 
-                if (state.connected) {
-                    dot.classList.remove("disconnected");
-                    status.textContent = "已连接";
-                    btn.textContent = "断开";
-                    btn.classList.remove("disconnected");
+                if (state.connecting) {
+                    // 连接中状态
+                    btn.className = "connection-btn connecting";
+                    btnIcon.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                        </svg>
+                    `;
+                    btnText.textContent = "正在连接...";
+                    btn.title = "正在连接...";
+                } else if (state.connected) {
+                    // 已连接状态
+                    btn.className = "connection-btn connected";
+                    btnIcon.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+                            <line x1="12" y1="2" x2="12" y2="12"/>
+                        </svg>
+                    `;
+                    btnText.textContent = "已连接";
+                    btn.title = "点击断开连接";
                 } else {
-                    dot.classList.add("disconnected");
-                    status.textContent = "已断开";
-                    btn.textContent = "连接";
-                    btn.classList.add("disconnected");
+                    // 已断开状态
+                    btn.className = "connection-btn disconnected";
+                    btnIcon.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+                            <line x1="2" y1="2" x2="22" y2="22"/>
+                        </svg>
+                    `;
+                    btnText.textContent = "已断开";
+                    btn.title = "点击连接";
                 }
+            }
+
+            // ==================== 通知功能 ====================
+            function showNotification(message, type = "success") {
+                const container = document.getElementById("notificationContainer");
+
+                // 移除现有通知
+                const existingNotification = container.querySelector(".notification");
+                if (existingNotification) {
+                    existingNotification.remove();
+                }
+
+                // 创建新通知
+                const notification = document.createElement("div");
+                notification.className = `notification ${type}`;
+                notification.textContent = message;
+
+                container.appendChild(notification);
+
+                // 3秒后自动隐藏
+                setTimeout(() => {
+                    notification.classList.add("hide");
+                    setTimeout(() => {
+                        notification.remove();
+                    }, 300);
+                }, 3000);
             }
 
             function toggleConnection() {
                 if (state.connected) {
+                    // 人为断开，设置标志位防止自动重连
+                    state.manualDisconnect = true;
                     if (state.mqttClient) {
                         state.mqttClient.end();
                     }
-                } else {
+                } else if (!state.connecting) {
+                    // 只有在非连接状态下才允许连接
+                    state.manualDisconnect = false;
                     initMqttClient();
                 }
             }
@@ -2284,7 +2780,7 @@
                 document.querySelectorAll(".nav-item").forEach((item) => {
                     item.classList.toggle(
                         "active",
-                        item.dataset.module === moduleName
+                        item.dataset.module === moduleName,
                     );
                 });
 
@@ -2292,7 +2788,7 @@
                 document.querySelectorAll(".module").forEach((module) => {
                     module.classList.toggle(
                         "active",
-                        module.id === `${moduleName}Module`
+                        module.id === `${moduleName}Module`,
                     );
                 });
 
@@ -2304,7 +2800,10 @@
 
             function toggleTheme() {
                 state.theme = state.theme === "light" ? "dark" : "light";
-                document.documentElement.setAttribute("data-theme", state.theme);
+                document.documentElement.setAttribute(
+                    "data-theme",
+                    state.theme,
+                );
                 const toggleBtn = document.getElementById("themeToggle");
                 if (state.theme === "dark") {
                     toggleBtn.innerHTML = `
@@ -2336,14 +2835,20 @@
             }
 
             function hideAddSubModal() {
-                document.getElementById("addSubModal").classList.remove("active");
+                document
+                    .getElementById("addSubModal")
+                    .classList.remove("active");
                 document.getElementById("subTopicInput").value = "";
                 document.getElementById("subQosInput").value = "0";
             }
 
             function confirmAddSubscription() {
-                const topic = document.getElementById("subTopicInput").value.trim();
-                const qos = parseInt(document.getElementById("subQosInput").value);
+                const topic = document
+                    .getElementById("subTopicInput")
+                    .value.trim();
+                const qos = parseInt(
+                    document.getElementById("subQosInput").value,
+                );
 
                 if (!topic) {
                     alert("请输入主题");
@@ -2365,7 +2870,7 @@
                 // 导航菜单
                 document.querySelectorAll(".nav-item").forEach((item) => {
                     item.addEventListener("click", () =>
-                        switchModule(item.dataset.module)
+                        switchModule(item.dataset.module),
                     );
                 });
 
@@ -2413,16 +2918,21 @@
                 document
                     .getElementById("confirmSubBtn")
                     .addEventListener("click", confirmAddSubscription);
-                document.getElementById("addSubModal").addEventListener("click", (e) => {
-                    if (e.target.id === "addSubModal") hideAddSubModal();
-                });
+                document
+                    .getElementById("addSubModal")
+                    .addEventListener("click", (e) => {
+                        if (e.target.id === "addSubModal") hideAddSubModal();
+                    });
 
                 // 回车键确认订阅
-                document.getElementById("subTopicInput").addEventListener("keypress", (e) => {
-                    if (e.key === "Enter") confirmAddSubscription();
-                });
+                document
+                    .getElementById("subTopicInput")
+                    .addEventListener("keypress", (e) => {
+                        if (e.key === "Enter") confirmAddSubscription();
+                    });
 
                 // 初始化
+                updateConnectionUI();
                 if (CONFIG.autoConnect) {
                     initMqttClient();
                 }

@@ -5293,7 +5293,7 @@ int MqttBroker_InitEx(MqttBroker* broker, MqttBrokerNet* net)
     /* Set default HTTP Basic authentication credentials */
     XSTRNCPY(broker->http_username, "admin", sizeof(broker->http_username) - 1);
     broker->http_username[sizeof(broker->http_username) - 1] = '\0';
-    XSTRNCPY(broker->http_password, "22182666", sizeof(broker->http_password) - 1);
+    XSTRNCPY(broker->http_password, "123456", sizeof(broker->http_password) - 1);
     broker->http_password[sizeof(broker->http_password) - 1] = '\0';
     
     broker->running = 0;
@@ -6431,7 +6431,6 @@ int MqttBroker_AddWebSocketClient(MqttBroker* broker, BROKER_SOCKET_T sock)
         ws_ctx->handshake_done = 1;
     }
     
-    WBLOG_INFO(broker, "WebSocket client added successfully on sock=%d", (int)sock);
     return MQTT_CODE_SUCCESS;
 }
 #endif /* ENABLE_MQTT_WEBSOCKET */
@@ -6715,6 +6714,8 @@ int wolfmqtt_broker(int argc, char** argv)
     g_broker = &broker;
     signal(SIGINT, broker_signal_handler);
     signal(SIGTERM, broker_signal_handler);
+    /* Ignore SIGPIPE to prevent crash when writing to closed sockets */
+    signal(SIGPIPE, SIG_IGN);
 #endif
 
     rc = MqttBroker_Run(&broker);

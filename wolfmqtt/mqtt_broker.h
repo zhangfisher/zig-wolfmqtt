@@ -86,7 +86,7 @@ typedef void (*MqttBrokerLogCb)(LogLevel level, const char* format, va_list args
     #define BROKER_TX_BUF_SZ       4096
 #endif
 #ifndef BROKER_TIMEOUT_MS
-    #define BROKER_TIMEOUT_MS      1000
+    #define BROKER_TIMEOUT_MS      5000  /* 5 seconds for HTTP/WebSocket connections */
 #endif
 #ifndef BROKER_LISTEN_BACKLOG
     #define BROKER_LISTEN_BACKLOG  128
@@ -263,6 +263,13 @@ typedef struct MqttBrokerApiContext {
     /* Public URLs that don't require authentication */
     char** public_urls;      /* Array of URL path strings */
     int public_url_count;    /* Number of public URLs */
+    
+    /* Session management for Cookie-based authentication */
+    char session_secret[64];              /* Secret for session token generation */
+    char active_sessions[16][64];         /* Simple session storage (max 16 sessions) */
+    WOLFMQTT_BROKER_TIME_T session_times[16]; /* Session creation times */
+    int session_count;                    /* Number of active sessions */
+    word32 session_timeout_sec;           /* Session timeout in seconds (default: 3600 = 1 hour) */
 } MqttBrokerApiContext;
 
 /* -------------------------------------------------------------------------- */
@@ -596,6 +603,8 @@ typedef struct MqttBroker {
     MqttBrokerApiContext* api_ctx;  /* HTTP API context */
     char http_username[64];         /* HTTP Basic authentication username */
     char http_password[64];         /* HTTP Basic authentication password */
+    char http_apikey[64];           /* HTTP API key for Bearer token authentication (empty = no auth required) */
+    char* http_headers;             /* Custom HTTP headers (semicolon-separated) */
 } MqttBroker;
 
 /* -------------------------------------------------------------------------- */
@@ -677,6 +686,12 @@ WOLFMQTT_API void MqttBrokerApi_Free(MqttBrokerApiContext* api_ctx);
 
 /* Publish log message to $sys/broker/logs topic (QoS=0, retain=false) */
 WOLFMQTT_API int MqttBrokerApi_PublishLog(MqttBrokerApiContext* api_ctx, const char* log_msg, LogLevel level);
+
+/* Set custom HTTP headers (semicolon-separated) */
+WOLFMQTT_API int MqttBroker_SetHttpHeaders(MqttBroker* broker, const char* headers);
+
+/* Get current custom HTTP headers */
+WOLFMQTT_API const char* MqttBroker_GetHttpHeaders(MqttBroker* broker);
 
 #ifdef WOLFMQTT_BROKER_EPOLL
 /* Set epoll max events (must be called before MqttBroker_Start) */

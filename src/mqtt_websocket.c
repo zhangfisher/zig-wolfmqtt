@@ -208,6 +208,10 @@ static int ws_build_handshake_response(MqttWebSocketContext* ws_ctx,
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Accept: %s\r\n"
         "Sec-WebSocket-Protocol: %s\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
+        "Access-Control-Allow-Headers: Content-Type, Authorization, Cookie\r\n"
+        "Access-Control-Max-Age: 86400\r\n"
         "\r\n",
         accept_key, protocol);
     
